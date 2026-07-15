@@ -1,10 +1,11 @@
 --- a/hw/arm/xilinx_zynq.c
 +++ b/hw/arm/xilinx_zynq.c
-@@ -22,10 +22,13 @@
+@@ -22,10 +22,14 @@
  #include "hw/arm/boot.h"
  #include "net/net.h"
  #include "system/system.h"
 +#include "system/tcg.h"
++#include "migration/vmstate.h"
  #include "hw/boards.h"
  #include "hw/block/flash.h"
  #include "hw/loader.h"
@@ -14,7 +15,7 @@
  #include "hw/ssi/ssi.h"
  #include "hw/usb/chipidea.h"
  #include "qemu/error-report.h"
-@@ -39,6 +42,7 @@
+@@ -39,6 +43,7 @@
  #include "qom/object.h"
  #include "exec/tswap.h"
  #include "target/arm/cpu-qom.h"
@@ -22,7 +23,7 @@
  #include "qapi/visitor.h"
  
  #define TYPE_ZYNQ_MACHINE MACHINE_TYPE_NAME("xilinx-zynq-a9")
-@@ -93,8 +97,59 @@
+@@ -93,8 +98,96 @@
      Clock *ps_clk;
      ARMCPU *cpu[ZYNQ_MAX_CPUS];
      uint8_t boot_mode;
@@ -33,6 +34,12 @@
  
 +#define P210_CPU1_RST      BIT(1)
 +#define P210_CPU1_CLKSTOP  BIT(5)
++
++static void p210_stop_secondary_async(CPUState *cs, run_on_cpu_data data)
++{
++    cpu_reset(cs);
++    cs->halted = 1;
++}
 +
 +static void p210_start_secondary_async(CPUState *cs, run_on_cpu_data data)
 +{
@@ -63,11 +70,42 @@
 +    uint32_t cpu1_stop = P210_CPU1_RST | P210_CPU1_CLKSTOP;
 +
 +    s->p210_cpu_rst_ctrl = val;
++    if (!(old & cpu1_stop) && (val & cpu1_stop) && s->cpu[1]) {
++        async_run_on_cpu(CPU(s->cpu[1]), p210_stop_secondary_async,
++                         RUN_ON_CPU_NULL);
++    }
 +    if ((old & cpu1_stop) && !(val & cpu1_stop) && s->cpu[1]) {
 +        async_run_on_cpu(CPU(s->cpu[1]), p210_start_secondary_async,
 +                         RUN_ON_CPU_NULL);
 +    }
 +}
++
++static void p210_cpu_rst_reset(void *opaque)
++{
++    ZYNQ_MACHINE(opaque)->p210_cpu_rst_ctrl = 0;
++}
++
++static int p210_cpu_rst_post_load(void *opaque, int version_id)
++{
++    ZynqMachineState *s = ZYNQ_MACHINE(opaque);
++
++    if ((s->p210_cpu_rst_ctrl & (P210_CPU1_RST | P210_CPU1_CLKSTOP)) &&
++        s->cpu[1]) {
++        CPU(s->cpu[1])->halted = 1;
++    }
++    return 0;
++}
++
++static const VMStateDescription vmstate_p210_cpu_rst = {
++    .name = "xilinx-zynq-a9/p210-cpu-rst",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .post_load = p210_cpu_rst_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32(p210_cpu_rst_ctrl, ZynqMachineState),
++        VMSTATE_END_OF_LIST()
++    },
++};
 +
 +static const MemoryRegionOps p210_cpu_rst_ops = {
 +    .read = p210_cpu_rst_read,
@@ -82,7 +120,7 @@
  static void zynq_write_board_setup(ARMCPU *cpu,
                                     const struct arm_boot_info *info)
  {
-@@ -115,14 +170,14 @@
+@@ -115,14 +208,14 @@
  
  static struct arm_boot_info zynq_binfo = {};
  
@@ -99,7 +137,7 @@
      s = SYS_BUS_DEVICE(dev);
      sysbus_realize_and_unref(s, &error_fatal);
      sysbus_mmio_map(s, 0, base);
-@@ -130,7 +185,8 @@
+@@ -130,7 +223,8 @@
  }
  
  static inline int zynq_init_spi_flashes(uint32_t base_addr, qemu_irq irq,
@@ -109,7 +147,7 @@
  {
      int unit = unit0;
      DeviceState *dev;
-@@ -162,8 +218,12 @@
+@@ -162,8 +256,12 @@
  
          for (j = 0; j < num_ss; ++j) {
              DriveInfo *dinfo = drive_get(IF_MTD, 0, unit++);
@@ -124,7 +162,7 @@
                  qdev_prop_set_drive_err(flash_dev, "drive",
                                          blk_by_legacy_dinfo(dinfo),
                                          &error_fatal);
-@@ -179,6 +239,16 @@
+@@ -179,6 +277,16 @@
      return unit;
  }
  
@@ -141,7 +179,7 @@
  static void zynq_set_boot_mode(Object *obj, const char *str,
                                                 Error **errp)
  {
-@@ -260,6 +330,13 @@
+@@ -260,6 +368,15 @@
      qdev_prop_set_uint8(slcr, "boot-mode", zynq_machine->boot_mode);
      sysbus_realize_and_unref(SYS_BUS_DEVICE(slcr), &error_fatal);
      sysbus_mmio_map(SYS_BUS_DEVICE(slcr), 0, 0xF8000000);
@@ -151,11 +189,13 @@
 +                              zynq_machine, "p210.cpu-rst", 4);
 +        memory_region_add_subregion_overlap(address_space_mem, 0xF8000244,
 +                                            &zynq_machine->p210_cpu_rst, 1);
++        qemu_register_reset(p210_cpu_rst_reset, zynq_machine);
++        vmstate_register(NULL, 0, &vmstate_p210_cpu_rst, zynq_machine);
 +    }
  
      dev = qdev_new(TYPE_A9MPCORE_PRIV);
      qdev_prop_set_uint32(dev, "num-cpu", smp_cpus);
-@@ -282,10 +359,32 @@
+@@ -282,10 +399,32 @@
          pic[n] = qdev_get_gpio_in(dev, n);
      }
  
@@ -191,7 +231,7 @@
      sysbus_create_simple(TYPE_CHIPIDEA, 0xE0002000, pic[53 - GIC_INTERNAL]);
      sysbus_create_simple(TYPE_CHIPIDEA, 0xE0003000, pic[76 - GIC_INTERNAL]);
  
-@@ -311,8 +410,9 @@
+@@ -311,8 +450,9 @@
      sysbus_create_varargs("cadence_ttc", 0xF8002000,
              pic[69-GIC_INTERNAL], pic[70-GIC_INTERNAL], pic[71-GIC_INTERNAL], NULL);
  
@@ -203,7 +243,7 @@
  
      for (n = 0; n < 2; n++) {
          int hci_irq = n ? 79 : 56;
-@@ -449,6 +549,12 @@
+@@ -449,6 +589,12 @@
      zynq_binfo.loader_start = 0;
      zynq_binfo.board_setup_addr = BOARD_SETUP_ADDR;
      zynq_binfo.write_board_setup = zynq_write_board_setup;
@@ -216,7 +256,7 @@
  
      arm_load_kernel(zynq_machine->cpu[0], machine, &zynq_binfo);
  }
-@@ -473,6 +579,11 @@
+@@ -473,6 +619,11 @@
                                            "Supported boot modes:"
                                            " jtag qspi sd nor");
      object_property_set_default_str(prop, "qspi");

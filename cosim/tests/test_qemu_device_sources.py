@@ -64,7 +64,13 @@ class QEMUDeviceSourceTests(unittest.TestCase):
         manifest = _manifest()
         self.assertEqual(manifest["target"]["qemu_release"], "10.0.2")
         for relative in manifest["sources"]:
-            self.assertTrue((COSIM / relative).is_file(), relative)
+            source = COSIM / relative
+            self.assertTrue(source.is_file(), relative)
+            self.assertIn(
+                "SPDX-License-Identifier: GPL-2.0-or-later",
+                source.read_text(),
+                relative,
+            )
 
     def test_probe_contacts_are_present_in_device_sources(self) -> None:
         pl = (QEMU_SOURCES / "hw/misc/p210_sdr.c").read_text()
@@ -75,6 +81,9 @@ class QEMUDeviceSourceTests(unittest.TestCase):
             "#define P210_TX_CORE_VERSION            0x00090061",
             "#define P210_DMAC_VERSION               0x00040061",
             "#define DMAC_X_LENGTH_MASK              0x00ffffff",
+            "#define DMAC_ADDRESS_MASK               0x1ffffff8U",
+            "#define DMAC_REG_CURRENT_DEST_ADDR      0x434",
+            "#define DMAC_REG_CURRENT_SRC_ADDR       0x438",
             "#define P210_DMAC_QUEUE_DEPTH            4",
             "#define P210_DRP_LOCKED                 BIT(17)",
             "#define P210_STATUS_VALID               BIT(0)",
@@ -84,9 +93,16 @@ class QEMUDeviceSourceTests(unittest.TestCase):
             "static size_t p210_rx_fill",
             "uint64_t rx_sample_index",
             "static bool p210_dmac_accept_descriptor",
+            "static uint64_t p210_dmac_bytes_per_second",
+            "DMA_2D_TRANSFER=false",
+            "dmac->supports_cyclic",
+            "remaining > count",
             "dmac->queue_count == P210_DMAC_QUEUE_DEPTH",
             "dmac->regs[DMAC_REG_TRANSFER_DONE / 4] &= ~BIT(id)",
             "VMSTATE_UINT64(rx_sample_index, P210SDRState)",
+            "VMSTATE_STRUCT_ARRAY(rx_dmac.queue",
+            "VMSTATE_TIMER_PTR(rx_dmac.timer, P210SDRState)",
+            ".post_load = p210_sdr_post_load",
             "DEFINE_PROP_UINT16(\"rx-tone0-amplitude\"",
             "DEFINE_PROP_UINT8(\"rx-tone1-step\"",
             "P210_REG_CHAN_STATUS(15)",
@@ -102,6 +118,8 @@ class QEMUDeviceSourceTests(unittest.TestCase):
             "#define AD9361_REG_RX_CAL_STATUS         0x244",
             "#define AD9361_REG_TX_CAL_STATUS         0x284",
             "#define AD9361_VCO_LOCK                  BIT(1)",
+            "#define AD9361_BBPLL_MODULUS             2088960ULL",
+            "AD9361_P210_REFCLK_HZ * fract /",
             "p210_ad9361_complete_rx_bbf_cal(s)",
             "s->regs[AD9361_REG_RX_BBF_C3_LSB] = 0x36",
             "s->address - s->data_index",
@@ -109,6 +127,14 @@ class QEMUDeviceSourceTests(unittest.TestCase):
             self.assertIn(contact, spi)
 
         calibration = _manifest()["ad9361_spi"]["rx_bbf_calibration"]
+        reference_hz = calibration["reference_clock_hz"]
+        modulus = calibration["bbpll_fractional_modulus"]
+        integer = calibration["p210_startup_integer_word"]
+        fractional = int(calibration["p210_startup_fractional_word"], 0)
+        self.assertEqual(
+            reference_hz * integer + reference_hz * fractional // modulus,
+            calibration["p210_startup_bbpll_hz"],
+        )
         self.assertEqual(calibration["p210_startup_bbpll_hz"], 983040000)
         self.assertEqual(calibration["p210_startup_tune_divide"], 9)
         self.assertEqual(
@@ -119,7 +145,11 @@ class QEMUDeviceSourceTests(unittest.TestCase):
         dmac = _manifest()["axi_dmac_probe"]
         self.assertEqual(dmac["dma_length_width"], 24)
         self.assertEqual(dmac["x_length_write_mask"], "0x00ffffff")
+        self.assertEqual(dmac["memory_address_width_bits"], 29)
         self.assertEqual(dmac["maximum_transfer_segment_bytes"], 1 << 24)
+        self.assertFalse(dmac["rx_cyclic"])
+        self.assertTrue(dmac["tx_cyclic"])
+        self.assertFalse(dmac["two_dimensional_transfer"])
         self.assertEqual(dmac["descriptor_queue_depth"], 4)
         self.assertEqual(dmac["transfer_id_modulus"], 4)
         self.assertEqual(dmac["transfer_done_mask"], "0x0000000f")
@@ -135,6 +165,19 @@ class QEMUDeviceSourceTests(unittest.TestCase):
         self.assertEqual(fft["base"], "0x7c450000")
         self.assertEqual(fft["gic_spi"], 58)
         self.assertEqual(fft["maximum_fft_size"], 65536)
+
+    def test_machine_patch_stops_and_migrates_cpu1_reset(self) -> None:
+        patch = (ROOT / "qemu/patches/0001-p210-zynq-devices.patch").read_text()
+        for contact in (
+            "static void p210_stop_secondary_async",
+            "cpu_reset(cs);",
+            "cs->halted = 1;",
+            "static void p210_cpu_rst_reset",
+            "static int p210_cpu_rst_post_load",
+            "VMSTATE_UINT32(p210_cpu_rst_ctrl, ZynqMachineState)",
+            "vmstate_register(NULL, 0, &vmstate_p210_cpu_rst",
+        ):
+            self.assertIn(contact, patch)
 
     def test_sources_compile_with_qemu_10_flags(self) -> None:
         build = _qemu_build_dir()

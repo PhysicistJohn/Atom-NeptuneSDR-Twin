@@ -16,6 +16,7 @@ import threading
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .ad9361 import AD9361, GainMode
+from .version import __version__
 from .errors import TwinError
 
 
@@ -23,6 +24,10 @@ Getter = Callable[[], str]
 Setter = Callable[[str], None]
 RxProvider = Callable[[int], bytes]
 TxConsumer = Callable[[bytes], None]
+
+MAX_IIOD_COMMAND_BYTES = 64 * 1024
+MAX_IIOD_PAYLOAD_BYTES = 64 * 1024 * 1024
+MAX_IIOD_OPEN_SAMPLES = 0xFFFFFFFF
 
 
 @dataclass
@@ -142,7 +147,7 @@ class IIOContext:
         self,
         radio: AD9361,
         serial: str = "P210TWIN000000000000000000000001",
-        firmware_version: str = "p210-twin-0.1.0",
+        firmware_version: str = "p210-twin-" + __version__,
         rx_provider: Optional[RxProvider] = None,
         tx_consumer: Optional[TxConsumer] = None,
     ) -> None:
@@ -430,9 +435,37 @@ class IIODSession:
                     return self._integer(-errno.ENODEV)
                 if device.id in self.open_buffers:
                     return self._integer(-errno.EBUSY)
-                cyclic = len(tokens) == 5 and tokens[4].upper() == "CYCLIC"
+                if not tokens[2].isdigit():
+                    return self._integer(-errno.EINVAL)
+                samples_count = int(tokens[2], 10)
+                if not 0 < samples_count <= MAX_IIOD_OPEN_SAMPLES:
+                    return self._integer(-errno.EINVAL)
+
+                mask_token = tokens[3]
+                mask_words = max(1, (len(device.channels) + 31) // 32)
+                if len(mask_token) != mask_words * 8 or any(
+                    character not in "0123456789abcdefABCDEF"
+                    for character in mask_token
+                ):
+                    return self._integer(-errno.EINVAL)
+                mask = int(mask_token, 16)
+                valid_mask = sum(
+                    1 << index
+                    for index, channel in enumerate(device.channels)
+                    if channel.scan_index is not None
+                )
+                if not mask or mask & ~valid_mask:
+                    return self._integer(-errno.EINVAL)
+
+                if len(tokens) == 5 and tokens[4].upper() != "CYCLIC":
+                    return self._integer(-errno.EINVAL)
+                cyclic = len(tokens) == 5
+                if cyclic and not any(channel.output for channel in device.scan_channels):
+                    return self._integer(-errno.EINVAL)
                 self.open_buffers[device.id] = _OpenBuffer(
-                    samples_count=int(tokens[2]), mask=int(tokens[3], 16), cyclic=cyclic
+                    samples_count=samples_count,
+                    mask=mask,
+                    cyclic=cyclic,
                 )
                 return self._integer(0)
             if verb == "CLOSE" and len(tokens) == 2:
@@ -450,8 +483,15 @@ class IIODSession:
                 data = value.encode("utf-8")
                 return self._integer(len(data)) + data + b"\n"
             if verb == "WRITE":
+                if len(tokens) < 3 or not tokens[-1].isdigit():
+                    return self._integer(-errno.EINVAL)
+                declared_length = int(tokens[-1], 10)
+                if declared_length > MAX_IIOD_PAYLOAD_BYTES:
+                    return self._integer(-errno.E2BIG)
                 if payload is None:
                     return self._integer(-errno.EINVAL)
+                if len(payload) != declared_length:
+                    return self._integer(-errno.EIO)
                 value = payload.decode("utf-8").rstrip("\0")
                 self._attribute(tokens[1:-1], write=True, payload=value)
                 return self._integer(len(payload))
@@ -474,7 +514,7 @@ class IIODSession:
             return self._integer(-errno.ENODEV)
         except PermissionError:
             return self._integer(-errno.EPERM)
-        except (ValueError, TwinError):
+        except (TypeError, ValueError, TwinError):
             return self._integer(-errno.EINVAL)
 
     def _attribute(self, tokens: Sequence[str], write: bool, payload: Optional[str]) -> str:
@@ -511,11 +551,11 @@ class IIODSession:
             return self._integer(-errno.EPERM)
         if length <= 0:
             return self._integer(-errno.EINVAL)
-        data = device.rx_provider(length)
-        if len(data) < length:
-            data += b"\0" * (length - len(data))
-        elif len(data) > length:
-            data = data[:length]
+        if length > MAX_IIOD_PAYLOAD_BYTES:
+            return self._integer(-errno.E2BIG)
+        data = bytes(device.rx_provider(length))
+        if len(data) != length:
+            return self._integer(-errno.EIO)
         words = max(1, (len(device.channels) + 31) // 32)
         mask = "".join("%08x" % ((opened.mask >> (32 * index)) & 0xFFFFFFFF) for index in reversed(range(words)))
         return self._integer(len(data)) + mask.encode("ascii") + b"\n" + data
@@ -526,6 +566,10 @@ class IIODSession:
             return self._integer(-errno.EBADF)
         if device.tx_consumer is None:
             return self._integer(-errno.EPERM)
+        if length <= 0:
+            return self._integer(-errno.EINVAL)
+        if length > MAX_IIOD_PAYLOAD_BYTES:
+            return self._integer(-errno.E2BIG)
         if payload is None:
             return self._integer(length)  # First WRITEBUF handshake.
         if len(payload) != length:
@@ -539,24 +583,70 @@ class IIODSession:
 
 
 class _IIODRequestHandler(socketserver.StreamRequestHandler):
+    @staticmethod
+    def _read_exact(stream, length: int) -> Optional[bytes]:
+        chunks: List[bytes] = []
+        remaining = length
+        while remaining:
+            chunk = stream.read(remaining)
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
     def handle(self) -> None:
         session = IIODSession(self.server.context)  # type: ignore[attr-defined]
         while not session.closed:
-            line = self.rfile.readline(64 * 1024)
+            line = self.rfile.readline(MAX_IIOD_COMMAND_BYTES + 1)
             if not line:
                 break
-            tokens = line.decode("ascii", errors="ignore").strip().split()
+            if len(line) > MAX_IIOD_COMMAND_BYTES:
+                self.wfile.write(session._integer(-errno.E2BIG))
+                self.wfile.flush()
+                break
+            if not line.endswith(b"\n"):
+                self.wfile.write(session._integer(-errno.EIO))
+                self.wfile.flush()
+                break
+            try:
+                tokens = line.decode("ascii").strip().split()
+            except UnicodeDecodeError:
+                response = session.execute(line)
+                self.wfile.write(response)
+                self.wfile.flush()
+                continue
             payload: Optional[bytes] = None
             if tokens and tokens[0].upper() == "WRITE" and tokens[-1].isdigit():
-                payload = self.rfile.read(int(tokens[-1]))
+                length = int(tokens[-1], 10)
+                if length > MAX_IIOD_PAYLOAD_BYTES:
+                    self.wfile.write(session.execute(line, None))
+                    self.wfile.flush()
+                    break
+                payload = self._read_exact(self.rfile, length)
+                if payload is None:
+                    response = session.execute(line, b"")
+                    self.wfile.write(response)
+                    self.wfile.flush()
+                    break
             elif tokens and tokens[0].upper() == "WRITEBUF" and len(tokens) == 3:
-                length = int(tokens[2])
                 first = session.execute(line, None)
                 self.wfile.write(first)
                 self.wfile.flush()
                 if first.startswith(b"-"):
+                    if tokens[2].isdigit() and int(tokens[2], 10) > MAX_IIOD_PAYLOAD_BYTES:
+                        break
                     continue
-                payload = self.rfile.read(length)
+                try:
+                    length = int(tokens[2], 10)
+                except ValueError:
+                    continue
+                payload = self._read_exact(self.rfile, length)
+                if payload is None:
+                    response = session.execute(line, b"")
+                    self.wfile.write(response)
+                    self.wfile.flush()
+                    break
             response = session.execute(line, payload)
             if response:
                 self.wfile.write(response)
@@ -598,4 +688,3 @@ class IIODServer(socketserver.ThreadingTCPServer):
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.stop()
-

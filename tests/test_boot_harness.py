@@ -143,7 +143,7 @@ def _make_p210_dtb():
     )
 
 
-def _make_fit():
+def _make_fit(kernel_hash=None):
     dtb_a = _make_target_dtb("a")
     dtb_b = _make_target_dtb("b")
     return _make_fdt(
@@ -163,7 +163,7 @@ def _make_fit():
                             "type": _string("kernel"),
                             "compression": _string("none"),
                         },
-                        [],
+                        [] if kernel_hash is None else [("hash@1", kernel_hash, [])],
                     ),
                     (
                         "ramdisk@1",
@@ -295,6 +295,33 @@ class BootHarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(FirmwareFormatError):
                 extract_fit_image(bytes(fit), temporary)
+
+    def test_fit_accepts_valid_declared_sha256_hash(self):
+        fit = _make_fit(
+            {
+                "algo": _string("sha256"),
+                "value": hashlib.sha256(b"kernel-one").digest(),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            artifacts = extract_fit_image(fit, temporary)
+            self.assertEqual(artifacts.kernel.read_bytes(), b"kernel-one")
+
+    def test_fit_rejects_unsupported_or_malformed_declared_hash(self):
+        malformed = (
+            {"algo": _string("not-a-hash"), "value": b"x" * 32},
+            {"value": b"x" * 32},
+            {"algo": _string("sha256")},
+            {"algo": b"sha256", "value": b"x" * 32},
+            {"algo": _string("sha256"), "value": b"too-short"},
+        )
+        for properties in malformed:
+            with self.subTest(properties=properties):
+                with tempfile.TemporaryDirectory() as temporary:
+                    with self.assertRaisesRegex(
+                        FirmwareFormatError, "FIT integrity validation failed"
+                    ):
+                        extract_fit_image(_make_fit(properties), temporary)
 
     def test_p210_tar_extracts_crc_checked_uimage_payload_and_dtb(self):
         with tempfile.TemporaryDirectory() as temporary:

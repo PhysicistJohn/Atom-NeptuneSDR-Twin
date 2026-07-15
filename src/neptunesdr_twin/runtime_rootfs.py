@@ -208,6 +208,8 @@ class NewcArchive:
                 raise FirmwareFormatError("rootfs cpio payload checksum mismatch")
             offset = _align4(data_end)
             if name == TRAILER_NAME:
+                if payload:
+                    raise FirmwareFormatError("rootfs cpio trailer has a file payload")
                 saw_trailer = True
                 break
             cls._validate_name(name)
@@ -229,31 +231,50 @@ class NewcArchive:
             )
         if not saw_trailer:
             raise FirmwareFormatError("rootfs cpio has no TRAILER!!! record")
+        if any(data[offset:]):
+            raise FirmwareFormatError(
+                "non-padding data follows the first rootfs cpio archive"
+            )
         return cls(entries)
 
     @staticmethod
     def _validate_name(name: str) -> None:
-        if name in ("", "."):
+        if name == ".":
             return
-        path = PurePosixPath(name)
-        if path.is_absolute() or any(part in ("", "..") for part in path.parts):
+        if not isinstance(name, str) or not name:
             raise FirmwareFormatError("unsafe rootfs cpio path %r" % name)
-        if "\0" in name or "\\" in name:
+        if "\0" in name or "\\" in name or name.startswith("/"):
             raise FirmwareFormatError("unsafe rootfs cpio path %r" % name)
+        # Linux resolves '.', repeated separators, and trailing separators to
+        # the same extraction path.  Reject those aliases so the dictionary
+        # audited here is exactly the namespace the kernel will extract.
+        if any(part in ("", ".", "..") for part in name.split("/")):
+            raise FirmwareFormatError("unsafe rootfs cpio path %r" % name)
+
+    @classmethod
+    def _lookup_name(cls, path: str) -> str:
+        if path in ("", "/"):
+            return "."
+        if path.startswith("/"):
+            path = path[1:]
+            if path.startswith("/"):
+                raise FirmwareFormatError("unsafe rootfs lookup path %r" % path)
+        cls._validate_name(path)
+        return path
 
     @classmethod
     def from_gzip(cls, data: bytes) -> "NewcArchive":
         return cls.parse(_bounded_gunzip(data))
 
     def entry(self, path: str) -> CpioEntry:
-        normalized = path.lstrip("/") or "."
+        normalized = self._lookup_name(path)
         try:
             return self._by_name[normalized]
         except KeyError as exc:
             raise FirmwareFormatError("rootfs lacks /%s" % normalized) from exc
 
     def read(self, path: str, *, follow_symlinks: bool = True) -> bytes:
-        normalized = path.lstrip("/") or "."
+        normalized = self._lookup_name(path)
         seen = set()
         for _ in range(16):
             entry = self.entry(normalized)
@@ -291,7 +312,7 @@ class NewcArchive:
             return False
 
     def replaced(self, path: str, data: bytes, *, mode: Optional[int] = None) -> "NewcArchive":
-        normalized = path.lstrip("/")
+        normalized = self._lookup_name(path)
         original = self.entry(normalized)
         replacement = replace(original, data=bytes(data), mode=original.mode if mode is None else mode)
         return NewcArchive(

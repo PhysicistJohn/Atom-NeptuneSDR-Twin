@@ -35,10 +35,16 @@ class AD9361Tests(unittest.TestCase):
             self.radio.VCO_LOCK,
         )
         self.assertEqual(self.radio.state, ENSMState.SLEEP)
+        initial_epoch = self.radio.config_epoch
         with self.assertRaises(InvalidTransition):
             self.radio.set_ensm_state(ENSMState.FDD)
+        self.assertEqual(self.radio.config_epoch, initial_epoch)
         self.radio.set_ensm_state(ENSMState.ALERT)
+        self.assertEqual(self.radio.config_epoch, initial_epoch + 1)
+        self.radio.set_ensm_state(ENSMState.ALERT)
+        self.assertEqual(self.radio.config_epoch, initial_epoch + 1)
         self.radio.set_ensm_state(ENSMState.FDD)
+        self.assertEqual(self.radio.config_epoch, initial_epoch + 2)
         self.assertEqual(self.radio.read_register(0x017) & 0x0F, 0x0A)
 
     def test_configuration_runs_deterministic_calibration(self):

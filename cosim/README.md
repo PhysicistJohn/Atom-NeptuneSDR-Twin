@@ -54,6 +54,18 @@ the 4.14 ADI driver: it probes the width with an all-ones write and derives a
 old `DIV_ROUND_UP()` expression and cause a kernel divide-by-zero when an IIO
 buffer is enabled.
 
+The pinned XSA handoff is also authoritative for optional capabilities. Both
+DMAC instances have `DMA_2D_TRANSFER=false`, a 29-bit AXI memory address and
+64-bit memory beats; RX has `CYCLIC=false`, while TX has `CYCLIC=true`.
+Consequently `Y_LENGTH` and both stride registers read zero, only the
+direction's memory-side address register is implemented, and addresses are
+masked to `0x1ffffff8`.  RX/TX `FLAGS` reset to `0x2`/`0x3` respectively.
+`STATUS` is reserved and remains zero because the handoff disables the
+diagnostics interface. A failed QEMU address-space transaction therefore
+retires with the core's normal `TRANSFER_DONE`/EOT behavior and is additionally
+reported in QEMU's guest-error log; the model does not invent a guest-visible
+status bit.
+
 The DMAC also implements the core's four-entry descriptor queue and four
 two-bit transfer IDs.  Configuration registers are snapshotted when a submit
 is accepted; `TRANSFER_DONE[3:0]` is cleared on re-use and set on FIFO-ordered
@@ -81,7 +93,8 @@ The AD9361 model does not fake calibration by only clearing `0x016`.  RX
 baseband-filter calibration also produces the R2346 and C3 component codes at
 `0x1e6`, `0x1eb` and `0x1ec`.  The pinned driver consumes those values in
 `ad9361_rx_adc_setup()` and would otherwise divide by zero.  For the P210
-startup profile (983.04 MHz BBPLL, tune divide 9), the model returns
+startup profile (40 MHz reference, BBPLL integer word 24, fractional word
+`0x125c29` over the AD9361 modulus 2,088,960, tune divide 9), the model returns
 `R2346=1`, `C3_MSB=0`, `C3_LSB=0x36`; this lies inside the `0x35..0x3b`
 range visible in ADI traces from physical AD9361 devices.  Other requested
 bandwidths derive a finite component tuple from the same inverse-RC equation
@@ -130,3 +143,12 @@ Exact addresses and probe contacts are machine-readable in
 [`p210-contacts.json`](p210-contacts.json).
 The FFT register ABI and memory ordering are specified separately in
 [`P210_FFT_ABI.md`](../docs/P210_FFT_ABI.md).
+
+## License boundary
+
+The device sources and headers under `cosim/qemu-10.0.2/`, and the integration
+diff under `qemu/patches/`, are QEMU integration work distributed under
+GPL-2.0-or-later as marked in the copied source files. The repository's
+top-level MIT license applies to the independently written twin tooling; it
+does not relicense QEMU or the files compiled into QEMU. The GPL text is
+retained at [`../LICENSES/GPL-2.0-or-later.txt`](../LICENSES/GPL-2.0-or-later.txt).

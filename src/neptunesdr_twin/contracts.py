@@ -164,6 +164,12 @@ class ValueDomain:
         if not isinstance(self.value_type, ValueType):
             object.__setattr__(self, "value_type", ValueType(self.value_type))
         object.__setattr__(self, "allowed", tuple(self.allowed))
+        for name in ("minimum", "maximum"):
+            bound = getattr(self, name)
+            if bound is not None and (
+                not _is_real_number(bound) or not math.isfinite(bound)
+            ):
+                raise ValueError("%s must be a finite real number" % name)
         if self.minimum is not None and self.maximum is not None:
             if self.minimum > self.maximum:
                 raise ValueError("minimum cannot exceed maximum")
@@ -299,6 +305,42 @@ class ValueDomain:
                 if error:
                     return DomainRelation(False, error, value)
             return DomainRelation(True)
+
+        # ``finite`` constrains the numeric values accepted by an otherwise
+        # symbolic domain.  Bounds alone do not exclude NaN: both ``nan < x``
+        # and ``nan > x`` are false.  Prove this direction explicitly instead
+        # of silently treating a non-finite implementation domain as a subset
+        # of a finite specification domain.
+        if outer.finite and not self.finite:
+            nonfinite_candidates: Tuple[Any, ...]
+            if self.value_type is ValueType.COMPLEX:
+                nonfinite_candidates = (
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                    complex(float("nan"), 0.0),
+                    complex(float("inf"), 0.0),
+                    complex(0.0, float("inf")),
+                )
+            elif self.value_type in (
+                ValueType.ANY,
+                ValueType.FLOAT,
+                ValueType.NUMBER,
+            ):
+                nonfinite_candidates = (
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                )
+            else:
+                nonfinite_candidates = ()
+            for value in nonfinite_candidates:
+                if self.contains(value) and not outer.contains(value):
+                    return DomainRelation(
+                        False,
+                        "non-finite values are not accepted by the outer domain",
+                        value,
+                    )
 
         if outer.allowed:
             candidates: Optional[Tuple[Any, ...]] = None

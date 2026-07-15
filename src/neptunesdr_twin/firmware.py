@@ -501,17 +501,57 @@ def validate_fit_image(data: bytes, source: str = "FIT image") -> FirmwareReport
         }
         image_facts[image.name] = details
         for hash_node in image.children:
-            algorithm = hash_node.string("algo")
+            if hash_node.name.split("@", 1)[0] != "hash":
+                continue
+            algorithm_raw = hash_node.properties.get("algo")
             expected = hash_node.properties.get("value")
-            if not algorithm or expected is None:
+            check = "fit.hash." + image.name
+            if algorithm_raw is None or expected is None:
+                report.add(
+                    "error",
+                    check,
+                    "%s is missing algo or value" % hash_node.path,
+                )
+                continue
+            if (
+                len(algorithm_raw) < 2
+                or not algorithm_raw.endswith(b"\0")
+                or b"\0" in algorithm_raw[:-1]
+            ):
+                report.add(
+                    "error",
+                    check,
+                    "%s has a malformed scalar hash algorithm" % hash_node.path,
+                )
                 continue
             try:
-                actual = hashlib.new(algorithm, payload).digest()
-            except ValueError:
-                report.add("warning", "fit.hash." + image.name, "unsupported hash " + algorithm)
+                algorithm = algorithm_raw[:-1].decode("ascii")
+            except UnicodeDecodeError:
+                report.add(
+                    "error",
+                    check,
+                    "%s hash algorithm is not ASCII" % hash_node.path,
+                )
                 continue
+            try:
+                digest = hashlib.new(algorithm, payload)
+            except (TypeError, ValueError):
+                report.add("error", check, "unsupported hash " + algorithm)
+                continue
+            if digest.digest_size <= 0:
+                report.add("error", check, "unsupported variable-length hash " + algorithm)
+                continue
+            if len(expected) != digest.digest_size:
+                report.add(
+                    "error",
+                    check,
+                    "%s value length %d does not match %s digest length %d"
+                    % (hash_node.path, len(expected), algorithm, digest.digest_size),
+                )
+                continue
+            actual = digest.digest()
             if actual != expected:
-                report.add("error", "fit.hash." + image.name, algorithm + " mismatch")
+                report.add("error", check, algorithm + " mismatch")
     report.facts["images"] = image_facts
     report.facts["configurations"] = [child.name for child in configurations.children]
     return report

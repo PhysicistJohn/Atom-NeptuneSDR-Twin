@@ -53,8 +53,20 @@ class SpectrumStreamDecoder:
         self._buffer.clear()
 
     def feed(self, data: bytes) -> Tuple[SpectrumPacket, ...]:
+        """Decode packets while discarding their original wire representation."""
+
+        return tuple(packet for packet, _wire in self.feed_with_wire(data))
+
+    def feed_with_wire(self, data: bytes) -> Tuple[Tuple[SpectrumPacket, bytes], ...]:
+        """Decode packets and retain each packet's exact checked wire bytes.
+
+        Keeping the bytes beside the decoded value lets evidence collectors
+        select complete packets without accidentally retaining a coalesced
+        prefix of the following TCP update.
+        """
+
         self._buffer.extend(bytes(data))
-        packets: List[SpectrumPacket] = []
+        packets: List[Tuple[SpectrumPacket, bytes]] = []
         while len(self._buffer) >= PACKET_HEADER_BYTES:
             if self._buffer[:4] != PACKET_MAGIC:
                 raise SpectrumStreamError("spectrum stream lost NSFT framing")
@@ -66,7 +78,7 @@ class SpectrumStreamDecoder:
                 break
             raw = bytes(self._buffer[:packet_bytes])
             del self._buffer[:packet_bytes]
-            packets.append(unpack_spectrum_packet(raw))
+            packets.append((unpack_spectrum_packet(raw), raw))
         return tuple(packets)
 
 

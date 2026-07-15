@@ -36,6 +36,16 @@ class SpectrumStreamDecoderTests(unittest.TestCase):
         self.assertEqual([item.sequence for item in decoded], [1, 2])
         self.assertEqual(decoder.buffered_bytes, 0)
 
+    def test_checked_wire_bytes_are_returned_per_complete_packet(self):
+        first = packet(1).pack()
+        second = packet(2, 1).pack()
+        decoder = SpectrumStreamDecoder()
+        self.assertEqual(decoder.feed_with_wire(first[:11]), ())
+        decoded = decoder.feed_with_wire(first[11:] + second + b"NSFT")
+        self.assertEqual([item.sequence for item, _wire in decoded], [1, 2])
+        self.assertEqual([wire for _item, wire in decoded], [first, second])
+        self.assertEqual(decoder.buffered_bytes, 4)
+
     def test_bad_magic_and_oversize_length_fail_closed(self):
         raw = bytearray(packet().pack())
         raw[0] ^= 0xFF

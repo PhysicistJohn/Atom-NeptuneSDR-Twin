@@ -234,6 +234,28 @@ class RuntimeRootfsTests(unittest.TestCase):
         with self.assertRaises(FirmwareFormatError):
             NewcArchive([_entry("../escape")])
 
+    def test_newc_rejects_extraction_path_aliases(self):
+        for alias in ("", "./init", "bin//busybox", "bin/./busybox", "bin/"):
+            with self.subTest(alias=alias):
+                with self.assertRaises(FirmwareFormatError):
+                    NewcArchive([_entry(alias)])
+
+        archive = NewcArchive([_entry("init", b"real")])
+        self.assertEqual(archive.read("/init"), b"real")
+        for alias in ("//init", "./init", "init/", "bin/../init"):
+            with self.subTest(lookup=alias):
+                with self.assertRaises(FirmwareFormatError):
+                    archive.read(alias)
+
+    def test_newc_rejects_data_or_an_archive_after_first_trailer(self):
+        first = NewcArchive([_entry("init", b"first")]).to_bytes()
+        second = NewcArchive([_entry("init", b"second")]).to_bytes()
+        with self.assertRaisesRegex(FirmwareFormatError, "follows the first"):
+            NewcArchive.parse(first + second)
+        with self.assertRaisesRegex(FirmwareFormatError, "follows the first"):
+            NewcArchive.parse(first + b"not-padding")
+        self.assertEqual(NewcArchive.parse(first + b"\0" * 16).read("/init"), b"first")
+
     def test_elf_proves_arm_hard_float_dynamic_contract(self):
         elf = ELF32ARM(
             _elf(

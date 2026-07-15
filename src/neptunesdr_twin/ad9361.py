@@ -177,7 +177,11 @@ class AD9361:
         old = self.state
         self.state = target
         self._sync_registers()
-        self._record("ensm", {"from": old.name, "to": target.name})
+        # ENSM changes alter whether RX samples contain signal or are muted.
+        # They therefore define the same sample-configuration boundary as an
+        # LO, rate, bandwidth, or gain change.  Illegal/no-op transitions have
+        # returned above and do not consume an epoch.
+        self._bump_epoch("ensm", {"from": old.name, "to": target.name})
 
     def set_lo_frequency(self, direction: str, frequency_hz: int) -> None:
         frequency_hz = int(frequency_hz)

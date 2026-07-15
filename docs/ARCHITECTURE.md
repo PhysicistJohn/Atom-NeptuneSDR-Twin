@@ -51,6 +51,22 @@ implementation must separately provide a direct stream or DMA-safe kernel
 buffer contract and close HDL synthesis, DSP/BRAM use, cache coherency,
 clock-domain crossings and post-route timing.
 
+The reference PL runtime completes the continuous contact independently of
+wall-clock accelerator speed. It owns the RF source, consumes consecutive
+simultaneous RX1/RX2 blocks, derives rate/LO/configuration epoch atomically,
+and emits channel-0/channel-1 NSFT packets as one indivisible update. A
+retune-truncated average is counted and marked in the next pair. A full bounded
+result queue stalls RF consumption; it never silently overwrites an update.
+Its sample-time trace is deterministic, while its snapshot separately reports
+whether the dependency-free implementation leads or lags wall time.
+
+The USB contact is similarly decomposed from the absent electrical PHY. The
+public P210 device tree and QEMU remain host-mode. A USB/IP adapter exports the
+reference composite device to a standard Linux virtual host controller and
+can bridge native-IIO bytes to the released guest `iiod`. This changes the
+transport implementation without weakening descriptor, EP0, bulk-pipe, reset,
+mass-storage, CDC or RNDIS contact contracts.
+
 ## Assume/guarantee contracts
 
 A component contract is a pair `C = (A, G)` over typed contacts and modes:
@@ -82,7 +98,13 @@ Different contacts require different equality relations:
 | Reduced spectrum | Same FFT convention, bin selection, encoding, sequence/counter metadata and CRC | NSFT packets and RTL/software golden vectors |
 | RF analog | Metrics or distributions agree within a calibrated envelope | gain, ripple, NF, EVM, isolation, phase, drift |
 
-The model uses a monotonic virtual clock. No modeled component sleeps or reads wall time. Equal inputs therefore yield equal traces and content-addressed snapshots. Hardware traces are normalized before differential comparison because host bus numbers, wall-clock timestamps and serial numbers can legitimately vary.
+The deterministic model uses monotonic sample/virtual time. Equal inputs yield
+equal contact traces and content-addressed quiescent snapshots. Optional
+listener threads and the continuous worker read wall time only for I/O
+deadlines, pacing and an explicit lag metric; wall time never labels RF samples
+or changes numerical results. Hardware traces are normalized before
+differential comparison because host bus numbers, wall-clock timestamps and
+serial numbers can legitimately vary.
 
 ## Evidence is attached to guarantees
 
@@ -110,8 +132,9 @@ The arrival script deliberately stops before stimulus that can alter the device.
 - Hashes prove byte identity, not authorship, safety, or compatibility.
 - The basic QEMU kernel-entry harness proves only its declared scope.  The
   P210-enabled QEMU machine separately executes the ARM AD9361, CF-AXI,
-  four-entry DMAC, IIO/IIOD, GEM, and proposed FFT contacts.  Neither path
-  proves physical RF behavior or USB gadget enumeration.
+  four-entry DMAC, IIO/IIOD, GEM, and proposed FFT contacts. The standard
+  USB/IP adapter separately executes the virtual USB-device contact. Neither
+  layer proves physical RF or electrical USB signaling.
 - A valid AD9361 setting does not prove that the board’s RF matching network meets that setting.
 - An internally achievable sample rate does not prove sustainable USB or Ethernet throughput.
 
@@ -126,5 +149,7 @@ SPI/MMIO/DMA/IRQ contacts, but its RX waveform is a deterministic digital
 source and its proposed FFT has no synthesized RTL timing/resource evidence.
 The public P210 bundle supplies a kernel/device tree but no complete vendor
 rootfs, so the executable userspace is the separately hash-locked official
-Pluto v0.39 ARM rootfs.  Physical USB-device, RF, oscillator, power, and PCB
-behavior cannot be inferred from the retail listing or this integration run.
+Pluto v0.39 ARM rootfs. The virtual USB composite device is implemented at the
+protocol contact through USB/IP; connector signal integrity, RF, oscillator,
+power, and PCB behavior cannot be inferred from the retail listing or this
+integration run.

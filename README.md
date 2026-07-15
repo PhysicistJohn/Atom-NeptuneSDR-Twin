@@ -1,27 +1,61 @@
 # NeptuneSDR / HAMGEEK P210 digital twin
 
-This repository is a firmware-executing, contract-driven virtual hardware twin
-of the advertised HAMGEEK P210 / NeptuneSDR platform.  Its P210-enabled QEMU
+This repository is a complete, firmware-executing, contract-driven virtual
+development twin of the advertised HAMGEEK P210 / NeptuneSDR platform. Its
+P210-enabled QEMU
 machine runs ARM instructions from the public P210 Linux kernel/device tree
 against board-visible AD9361 SPI, CF-AXI ADC/DDS, four-entry AXI-DMAC, dual
 Cortex-A9, GEM, DDR, interrupt, and proposed PL FFT contacts.  The released ARM
 `iiod` and official host libiio operate across that machine; a second reference
-layer supplies deterministic contract/RF/USB models and golden vectors.
+layer supplies deterministic continuous RF/PL behavior, a standard USB/IP
+composite device, contract monitors, and golden vectors.
 
 The tested wideband path is real software integration, not a zero-filled or
 userspace-only demo: Linux IIO captures nonzero 2x2 IQ through the ADI drivers
 and AXI-DMAC, ARM copies each completed block into the FFT block's reserved DDR
 window, starts a 65,536-point two-channel integer FFT through MMIO/DMA, and
-transmits two CRC-checked NSFT spectra over the emulated Gigabit Ethernet
-contact at a configured 61.44 MSPS / 50 MHz RX profile.
+transmits two CRC-checked NSFT spectra over the emulated GEM/TCP network
+contact at a configured 61.44 MSPS / 50 MHz RX profile. The physical target is
+Gigabit Ethernet; the virtual link's negotiated line rate is not used as
+throughput evidence.
 
-Two boundaries remain non-negotiable.  No complete vendor P210 rootfs was
+The pre-arrival appliance is complete at its declared software-visible
+contacts; it does not need the purchased board to run. Two provenance
+boundaries remain non-negotiable. No complete vendor P210 rootfs was
 published with the public kernel, so the executable userspace is the separately
 hash-locked official Pluto v0.39 rootfs; this is not a claim that it is the
-seller-shipped image.  It is also not yet an exact twin of the purchased unit:
-physical USB-device behavior, PCB/RF response, oscillator/power behavior, and
-the proposed FFT's synthesized XC7Z020 resource/timing closure require the
-delivered board and/or RTL evidence.  See [Evidence and provenance](docs/EVIDENCE.md).
+seller-shipped image. Physical PCB/RF response, oscillator/power behavior, and
+a deployable FFT RTL build's XC7Z020 resource/timing closure are calibration or
+physical-implementation evidence, not virtual functionality. See the
+[complete virtual appliance](docs/VIRTUAL_APPLIANCE.md) and
+[evidence/provenance boundary](docs/EVIDENCE.md).
+
+## Run the whole appliance
+
+One command owns the firmware VM and native-USB bridge as one lifecycle:
+
+```sh
+scripts/run_virtual_appliance.sh
+```
+
+It waits for both released guest `iiod` and the ARM FFT service, exports the
+observed composite personality over USB/IP, prints `NEPTUNE_APPLIANCE READY`,
+and tears every process down together on Ctrl-C. Use `--no-build` after the
+first build. The default USB/IP listener is loopback-only; pass
+`--usbip-host 0.0.0.0` only for a trusted remote Linux client.
+
+For the fast deterministic layer—including consecutive 2x2 sample time,
+retune-atomic averaging, explicit lag and bounded no-silent-drop
+backpressure—run:
+
+```sh
+neptune-twin appliance
+```
+
+That local appliance exposes IIOD TCP, paired NSFT TCP and the same USB/IP
+composite target. Its default profile is 61.44 MSPS, 50 MHz RX bandwidth and a
+65,536-point two-channel FFT. Run `neptune-twin appliance --dry-run` to inspect
+the resolved contacts without opening listeners.
 
 ## Run the firmware-executing hardware twin now
 
@@ -41,6 +75,17 @@ bounded; initial downloads and compilation are not governed by `--timeout`.
 A passing acceptance run ends with `P210_RUNTIME PASS` and retains its serial
 log, NSFT wire capture, and decoded report below `.cache/p210-runtime/`.
 
+To reproduce every reference, protocol, co-simulation, locked-artifact, XSA and
+firmware gate in one run:
+
+```sh
+scripts/accept_virtual_twin.sh
+```
+
+It exits with `NEPTUNE_TWIN_ACCEPTANCE PASS` and retains its reports below
+`.cache/acceptance/`. `--no-build` reuses the compiled toolchains;
+`--reference-only` omits only the final firmware VM.
+
 For a persistent development target, leave the VM running in one terminal:
 
 ```sh
@@ -55,19 +100,32 @@ scripts/host_iio.sh info
 scripts/capture_guest_fft.py
 ```
 
-The forwarded endpoints are `ip:127.0.0.1:30431` for released `iiod` and
-`tcp:127.0.0.1:30432` for the ARM-generated NSFT spectrum stream. See
+The forwarded endpoints are `ip:127.0.0.1:30431` for released `iiod`,
+`tcp:127.0.0.1:30432` for the ARM-generated NSFT spectrum stream, and
+`tcp:127.0.0.1:30433` for the live UART1 console (also retained in the serial
+log). An optional loopback QEMU debug endpoint is enabled only with
+`--gdb PORT`; it is never exposed by default. See
 [Pinned host libiio workflow](docs/HOST_LIBIIO.md) and the
 [FFT register/DMA ABI](docs/P210_FFT_ABI.md).
 
-This is the executable pre-arrival target. It runs the public P210 kernel and
-device tree with the official Pluto v0.39 ARM rootfs because no complete
+The FFT service permits one active spectrum client. A client that stops reading
+is evicted after a two-second send deadline so a queued client can proceed.
+Changes to the RX LO, sample rate, or RF bandwidth made through `iiod` are
+snapshotted around each block; packets carry the actual stable center/sample
+metadata and an incrementing configuration epoch rather than boot-time
+constants.
+
+This is the firmware-executing layer of the pre-arrival target. It runs the
+public P210 kernel and device tree with the official Pluto v0.39 ARM rootfs because no complete
 seller P210 rootfs is public. It therefore confirms that composition, not the
 unknown bytes that will arrive in the unit. Ethernet/IIO/block-FFT are exercised
 end to end. This firmware harness restarts an IIO buffer and copies one complete
-block through the CPU per update; it does not prove continuous, lossless
-61.44-MSPS operation. A physical direct-stream or DMA-buffer driver, RF response,
-USB-device enumeration, and FPGA synthesis/timing still require board/RTL work.
+block through the CPU per update. The composed continuous reference-PL layer
+separately proves uninterrupted sample indices, epoch-atomic retunes and
+bounded backpressure; it reports wall-clock lag instead of pretending the
+dependency-free Python FFT runs at RF rate. USB device enumeration is supplied
+through the standard USB/IP adapter. Physical RF response and FPGA
+synthesis/timing remain physical evidence, not blockers to the virtual target.
 
 ## Contract/reference model
 
@@ -77,9 +135,15 @@ dependencies.
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
+
+The wheel/sdist is the dependency-free Python reference and protocol layer.
+The firmware VM, QEMU integration, ARM service, shell launchers, and complete
+acceptance matrix are repository assets; run those from a Git checkout rather
+than treating the wheel as the whole appliance.
 
 Inspect the resolved target, contract composition, 50 MHz rate budget, and reference USB profile:
 
@@ -102,7 +166,7 @@ neptune-twin serve --host 127.0.0.1 --port 30431
 iio_info -u ip:127.0.0.1
 ```
 
-The server is a behavioral conformance endpoint, not a promise that every command in every libiio release is implemented. Its supported command and buffer behavior is locked by the test suite.
+The server is a behavioral conformance endpoint, not a promise that every command in every libiio release is implemented. Its supported command and buffer behavior is locked by the test suite. The firmware appliance separately runs released ARM `iiod` 0.26.
 
 Firmware and PL handoff inputs are content-addressed and inspected offline; these commands never flash a board:
 
@@ -134,8 +198,9 @@ That bounded `qemu_boot.py` harness remains intentionally narrow: its P210
 result is `kernel-entry-only` because the public P210 bundle has no rootfs, and
 its stock Pluto result is `kernel-and-initramfs-entry`.  The separate
 P210-enabled runtime described above is what executes the AD9361/CF-AXI/DMAC,
-real IIO/IIOD, Ethernet, and proposed FFT contacts.  Neither path executes the
-public FPGA bitstream or physically enumerates a USB gadget.
+real IIO/IIOD, Ethernet, and proposed FFT contacts. Neither path executes the
+public FPGA bitstream. USB/IP supplies host enumeration at the USB protocol
+contact without claiming an emulated electrical PHY.
 
 ## What is modeled
 
@@ -145,9 +210,10 @@ public FPGA bitstream or physically enumerates a USB gadget.
 | Zynq-7020 | QEMU ARMv7 execution, two Cortex-A9s, 512 MiB DDR, SLCR secondary release, GEM and P210 PL address map; plus a fast Python contract model | Functional/instruction accurate enough for the pinned Linux path; not cycle/timing accurate |
 | AD9361 | QEMU SPI identity, calibration side effects and clock/status contacts consumed by the real ADI 4.14 driver; Python ENSM/RF control oracle | Real-driver E3 integration; silicon/RF edge cases remain capture-driven |
 | RF/sample plane | Real guest IIO/ADI buffer path with deterministic phase-continuous IQ16LE 2x2 tones and four-entry DMAC; richer Python noise/gain/loopback model | Digital packing/DMA proven; analog impairments require E5 calibration |
-| On-chip spectrum path | Real QEMU MMIO/DDR accelerator executing deterministic integer radix-2 FFTs through 65,536×2; ARM NSFT-v1 packetizer and host CRC decoder; Python numerical oracle | Firmware-visible E3 block runtime; present guest copies completed IIO blocks through the CPU, while a continuous physical PL stream and synthesized/post-route evidence remain open |
+| On-chip spectrum path | Real QEMU MMIO/DDR accelerator executing deterministic integer radix-2 FFTs through 65,536×2; ARM NSFT-v1 packetizer/host CRC decoder; continuous reference PL runtime with consecutive 2x2 sample indices, retune epochs and bounded backpressure | Firmware-visible E3 block runtime plus E2 continuous contact semantics; deployable RTL synthesis/post-route evidence remains physical work |
 | IIO/IIOD | Unmodified P210 ADI kernel drivers and released ARM `iiod` 0.26 reached by pinned official host libiio; separate behavioral conformance endpoint | Network/control/buffer integration proven against the composition; purchased-unit differential testing pending |
-| USB | Byte-locked reference descriptors, strings, normal/DFU metadata, EP0/native-IIO pipe model, and configfs deployment plan | QEMU's P210 DT is host-mode and no gadget UDC is emulated; physical enumeration remains open |
+| USB | Standard USB/IP device export with byte-locked descriptors/EP0, three native-IIO bulk pairs, optional released-guest bridge, RNDIS DHCP/ARP/ICMP and TCP-IIOD at 192.168.2.1, read-only FAT12 mass storage and CDC ACM; configfs deployment plan | Complete virtual USB protocol contact; QEMU's public P210 DT remains honestly host-mode and physical revision capture remains E4 work |
+| Debug | Live UART1 TCP console with simultaneous evidence log; opt-in loopback GDB remote target | Usable virtual UART/JTAG-class development contacts without inventing the revision-unknown physical USB bridge identity |
 | Firmware/PL artifacts | Hash-locked public P210 kernel/DT/XSA and official Pluto v0.39 rootfs; ELF/ABI audit, derived initramfs, source-built QEMU runtime | Provenance-preserving composition, not seller-authored full firmware, signed replacement, or bitstream execution |
 | Throughput | Separate internal, USB 2.0, Gigabit Ethernet and advertised host-rate contracts | Arithmetic is exact; delivered-unit throughput is unmeasured |
 
@@ -159,9 +225,9 @@ The AD9361 data sheet supports a tunable channel bandwidth up to 56 MHz, so a 50
 
 At 61.44 MSPS with two channels and native 16-bit I/Q containers, the raw payload is 491.52 MB/s (3.932 Gb/s). That is above both USB 2.0’s 60 MB/s signaling ceiling and Gigabit Ethernet’s 125 MB/s line-rate ceiling before protocol overhead. The listing’s “12 MSPS with HOST” and “61.44 MSPS burst” claims are therefore treated separately. Continuous wideband work must process, trigger, decimate, or channelize in the FPGA and use bounded burst capture for undecimated IQ.
 
-The default architecture budget is a 65,536-bin, two-channel on-chip FFT at 61.44 MSPS. Rate-limiting/averaging to 20 spectrum updates/s and emitting 16-bit log-power bins in framed `NSFT` version 1 packets (network byte order with CRC32) would reduce full-spectrum egress to roughly 5.24 MB/s. `neptune-twin fft-plan` proves that declared arithmetic/contact budget. The current ARM acceptance service emits unaveraged, discontinuous blocks and makes no 20-Hz cadence guarantee; an actual Vivado implementation still needs a direct sample path, synthesis, resource, CDC and post-route timing evidence.
+The default architecture budget is a 65,536-bin, two-channel on-chip FFT at 61.44 MSPS. Rate-limiting/averaging to at most 20 spectrum updates/s and emitting 16-bit log-power bins in framed `NSFT` version 1 packets (network byte order with CRC32) reduces full-spectrum egress to roughly 5.24 MB/s. `neptune-twin fft-plan` proves that declared arithmetic/contact budget. The continuous reference PL runtime executes this exact averaging/dataflow convention with no silent drops and explicit wall-clock lag. The ARM acceptance service exercises the firmware-visible accelerator one block at a time. A deployable Vivado implementation still needs a direct sample path, synthesis, resource, CDC and post-route timing evidence.
 
-The composed twin can publish the same self-framing NSFT byte stream over TCP with `NeptuneSDRTwin.start_spectrum_publisher()` and decode arbitrary TCP chunks with `SpectrumStreamDecoder`. The intended deployed path is physical Gigabit Ethernet or USB-RNDIS. TCP is deliberate: a full 65,536-bin packet—especially float32—does not fit in one UDP datagram.
+The composed twin can publish the same self-framing NSFT byte stream over TCP with `NeptuneSDRTwin.start_spectrum_publisher()` and decode arbitrary TCP chunks with `SpectrumStreamDecoder`. The tested virtual path is the dedicated spectrum TCP contact and the intended primary deployed path is physical Gigabit Ethernet. The current narrow USB-RNDIS model carries IIOD only; it does not silently claim an NSFT proxy. TCP is deliberate: a full 65,536-bin packet—especially float32—does not fit in one UDP datagram.
 
 Read [50 MHz wideband plan](docs/WIDEBAND_50MHZ.md) before buying test gear or designing around this bandwidth.
 
@@ -203,9 +269,14 @@ Current listing conflicts are retained rather than hidden. In particular, the pr
 
 Unit conventions are explicit: a byte is 8 bits; the external DDR data bus/transfer word is 16 bits (2 bytes); each I or Q converter component has 12 significant bits in a signed 16-bit container; and one complex I/Q sample occupies 4 bytes per enabled channel. The public XSA’s four 16-bit RX packer lanes form a 64-bit DMA word for one two-channel sample-time frame. “16-bit DDR” is a memory-bus width, not ADC precision or DMA width.
 
-## USB gadget testing
+## USB device testing
 
-[`scripts/linux_usb_gadget.sh`](scripts/linux_usb_gadget.sh) emits a Linux configfs plan by default and changes nothing. `--apply` is required before it creates or binds a gadget. Kernel-generated RNDIS/ACM/mass-storage descriptors plus a userspace FunctionFS IIO service are needed to approach the observed composite device; configfs metadata alone cannot guarantee byte-identical enumeration. See [USB behavior and deployment](docs/USB.md).
+`neptune-twin usbip-serve` exports the modeled composite device to a standard
+Linux USB/IP client and can bridge native IIO to released guest `iiod`.
+[`scripts/linux_usb_gadget.sh`](scripts/linux_usb_gadget.sh) remains the separate
+plan for binding the same functions to a machine with a physical Linux USB
+Device Controller; without `--apply` it changes nothing. See
+[USB behavior and deployment](docs/USB.md).
 
 ## Project map
 
@@ -214,8 +285,12 @@ Unit conventions are explicit: a byte is 8 bits; the external DDR data bus/trans
 - [`src/neptunesdr_twin/data/usb-p210-observed.json`](src/neptunesdr_twin/data/usb-p210-observed.json): byte-locked reference USB fixture.
 - [`src/neptunesdr_twin/data/firmware-lock.json`](src/neptunesdr_twin/data/firmware-lock.json): pinned firmware inputs and SHA-256 digests.
 - [`scripts/run_p210_firmware.sh`](scripts/run_p210_firmware.sh): one-command bounded firmware/IIO/DMA/FFT/NSFT acceptance run or persistent development VM.
+- [`scripts/run_virtual_appliance.sh`](scripts/run_virtual_appliance.sh): lifecycle wrapper for the firmware VM plus native-USB/IIOD bridge.
+- [`scripts/accept_virtual_twin.sh`](scripts/accept_virtual_twin.sh): one-command full acceptance matrix and retained reports.
 - [`scripts/build_p210_qemu.sh`](scripts/build_p210_qemu.sh), [`qemu/patches/0001-p210-zynq-devices.patch`](qemu/patches/0001-p210-zynq-devices.patch): pinned native QEMU build and P210 Zynq machine integration.
 - [`firmware/neptune_fft_streamer.c`](firmware/neptune_fft_streamer.c): static ARM capture, accelerator-control, and spectrum-transport service.
+- [`src/neptunesdr_twin/pl_runtime.py`](src/neptunesdr_twin/pl_runtime.py): continuous consecutive-sample 2x2 FFT/averaging/NSFT runtime.
+- [`src/neptunesdr_twin/usbip.py`](src/neptunesdr_twin/usbip.py): USB/IP composite device and released-guest native-IIO bridge.
 - [`cosim/qemu-10.0.2`](cosim/qemu-10.0.2): AD9361, CF-AXI, four-entry AXI-DMAC, and FFT device implementations.
 - [`scripts/fetch_firmware.py`](scripts/fetch_firmware.py), [`scripts/test_firmware.py`](scripts/test_firmware.py), [`scripts/qemu_boot.py`](scripts/qemu_boot.py): host-only locked download, validation and opt-in bounded boot smoke tests.
 - [`tests`](tests): executable behavior and regression contracts.
@@ -226,9 +301,21 @@ Unit conventions are explicit: a byte is 8 bits; the external DDR data bus/trans
 - [`docs/RUNTIME_ACCEPTANCE.md`](docs/RUNTIME_ACCEPTANCE.md): hard end-to-end gates, deterministic vector, accepted diagnostics, and physical-deployment boundary.
 - [`docs/WIDEBAND_50MHZ.md`](docs/WIDEBAND_50MHZ.md): bandwidth/throughput math and RF test plan.
 - [`docs/USB.md`](docs/USB.md): reference personalities, host access and gadget limitations.
+- [`docs/VIRTUAL_APPLIANCE.md`](docs/VIRTUAL_APPLIANCE.md): completion definition, launch paths and physical-evidence boundary.
+- [`docs/UPSTREAM.md`](docs/UPSTREAM.md): which fixes stay local and the gate for proposing a generic upstream change.
 
 ## Safety
 
 Keep first-arrival work RX-only. Do not connect a TX port directly to an RX port, do not transmit into an antenna during bench validation, and do not exceed the conservative input envelope in the contracts. Use a 50-ohm conducted setup, rated attenuators, a dummy load, and independently verified power levels. Operation must comply with the radio rules applicable at the test location.
 
 This project does not automatically flash firmware or claim vendor authorization to use Analog Devices’ USB VID on a redistributed product.
+
+## License boundary
+
+Original project files are MIT-licensed unless a file says otherwise. The QEMU
+integration source and patch are marked `GPL-2.0-or-later` because they are
+compiled with and derived against QEMU; the root MIT license does not relicense
+those files or any downloaded firmware/toolchain input. The corresponding
+license text is in [`LICENSES/GPL-2.0-or-later.txt`](LICENSES/GPL-2.0-or-later.txt).
+Content-addressed third-party artifacts retain their own licenses and
+provenance.

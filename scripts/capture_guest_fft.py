@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import socket
 import sys
 import time
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -17,13 +18,14 @@ SOURCE_TREE = REPOSITORY / "src"
 if str(SOURCE_TREE) not in sys.path:
     sys.path.insert(0, str(SOURCE_TREE))
 
-from neptunesdr_twin.fft import SpectrumPacket  # noqa: E402
+from neptunesdr_twin.fft import PayloadEncoding, SpectrumPacket  # noqa: E402
 from neptunesdr_twin.spectrum_transport import SpectrumStreamDecoder  # noqa: E402
 
 
 EXPECTED_TONE_BINS = {0: 65_536 * 5 // 64, 1: 65_536 * 13 // 64}
 EXPECTED_TONE_DBFS = {0: -2.53, 1: -6.08}
 TONE_DBFS_TOLERANCE = 0.10
+MAX_PENDING_SEQUENCES = 4
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -70,11 +72,45 @@ def _peak(packet: SpectrumPacket) -> Dict[str, object]:
         "bins": packet.bin_count,
         "sample_rate_hz": packet.sample_rate_hz,
         "center_frequency_hz": packet.center_frequency_hz,
+        "timestamp_ns": packet.timestamp_ns,
+        "config_epoch": packet.config_epoch,
         "peak_bin": bin_index,
         "peak_offset_hz": offset_hz,
         "peak_dbfs": value,
         "encoding": packet.encoding.name,
     }
+
+
+def _validate_synchronized_update(packets: Sequence[SpectrumPacket]) -> None:
+    if len(packets) != 2 or tuple(packet.channel for packet in packets) != (0, 1):
+        raise RuntimeError("a synchronized update must contain channels 0 and 1 exactly once")
+    first, second = packets
+    if first.sequence != second.sequence:
+        raise RuntimeError("synchronized channels have different sequence numbers")
+
+    fields = (
+        "version",
+        "encoding",
+        "fft_size",
+        "sample_rate_hz",
+        "center_frequency_hz",
+        "timestamp_ns",
+        "config_epoch",
+        "bin_start",
+        "bin_count",
+        "dropped_frames",
+        "overrun_events",
+        "dropped_updates",
+        "flags",
+    )
+    mismatched = [name for name in fields if getattr(first, name) != getattr(second, name)]
+    if mismatched:
+        raise RuntimeError(
+            "synchronized channels disagree on update metadata: %s"
+            % ", ".join(mismatched)
+        )
+    if first.encoding is not PayloadEncoding.UINT16_LOG_POWER:
+        raise RuntimeError("guest spectrum encoding is not UINT16_LOG_POWER")
 
 
 def capture_update(
@@ -85,12 +121,12 @@ def capture_update(
     output: Optional[Path] = None,
     verify_tones: bool = True,
 ) -> Dict[str, object]:
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     deadline = time.monotonic() + timeout
     decoder = SpectrumStreamDecoder()
-    by_sequence: Dict[int, Dict[int, SpectrumPacket]] = {}
-    retained = bytearray()
+    by_sequence: Dict[int, Dict[int, Tuple[SpectrumPacket, bytes]]] = {}
+    socket_bytes_received = 0
 
     with _connect(host, port, deadline) as connection:
         while time.monotonic() < deadline:
@@ -100,15 +136,21 @@ def capture_update(
                 continue
             if not chunk:
                 raise ConnectionError("FFT service closed before a complete update")
-            retained.extend(chunk)
-            for packet in decoder.feed(chunk):
+            socket_bytes_received += len(chunk)
+            for packet, wire_packet in decoder.feed_with_wire(chunk):
                 channels = by_sequence.setdefault(packet.sequence, {})
-                channels[packet.channel] = packet
+                if packet.channel in channels:
+                    raise RuntimeError(
+                        "guest repeated channel %d for sequence %d"
+                        % (packet.channel, packet.sequence)
+                    )
+                channels[packet.channel] = (packet, wire_packet)
                 if 0 in channels and 1 in channels:
-                    selected: Sequence[SpectrumPacket] = (channels[0], channels[1])
-                    if output is not None:
-                        output.parent.mkdir(parents=True, exist_ok=True)
-                        output.write_bytes(bytes(retained))
+                    selected_records = (channels[0], channels[1])
+                    selected: Sequence[SpectrumPacket] = tuple(
+                        record[0] for record in selected_records
+                    )
+                    _validate_synchronized_update(selected)
                     results: List[Dict[str, object]] = []
                     for item in selected:
                         if item.fft_size != 65_536 or item.bin_count != 65_536:
@@ -137,15 +179,28 @@ def capture_update(
                                 )
                             )
                         results.append(peak)
+                    selected_wire = b"".join(record[1] for record in selected_records)
+                    if output is not None:
+                        output.parent.mkdir(parents=True, exist_ok=True)
+                        output.write_bytes(selected_wire)
                     return {
                         "status": "passed",
                         "transport": "guest-arm-nsft-v1-tcp",
                         "sequence": selected[0].sequence,
+                        "timestamp_ns": selected[0].timestamp_ns,
+                        "config_epoch": selected[0].config_epoch,
+                        "sample_rate_hz": selected[0].sample_rate_hz,
+                        "center_frequency_hz": selected[0].center_frequency_hz,
                         "channels": results,
-                        "wire_bytes_received": len(retained),
+                        "wire_bytes_received": len(selected_wire),
+                        "socket_bytes_received": socket_bytes_received,
                         "crc_checked": True,
                         "tone_contract_checked": verify_tones,
                     }
+                if len(by_sequence) > MAX_PENDING_SEQUENCES:
+                    raise RuntimeError(
+                        "too many incomplete spectrum sequences without a synchronized pair"
+                    )
     raise TimeoutError("timed out before a synchronized two-channel FFT update")
 
 

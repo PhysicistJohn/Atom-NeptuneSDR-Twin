@@ -21,7 +21,8 @@ The default acceptance run must prove all of these contacts in one boot:
    drives the FFT 1.0 MMIO/DMA ABI after checking its capabilities and limits;
 7. the accelerator returns 131,072 power bins and matching sequence metadata;
 8. ARM emits two complete NSFT-v1 packets, and the host validates their CRCs,
-   sizes, sample metadata, and independent expected tone bins; and
+   sizes, encoding, identical per-update sequence/timestamp/configuration/loss
+   metadata, and independent expected tone bins; and
 9. the bounded run terminates QEMU and releases both forwarded TCP ports.
 
 The run writes its serial log, QEMU diagnostic log, libiio context, NSFT wire
@@ -42,6 +43,21 @@ manifest; the wire-capture hash varies because packet timestamps are live.
 | Spectrum wire update | two CRC-checked packets; 262,288 bytes total |
 | Host endpoints while serving | `ip:127.0.0.1:30431` (`iiod`), `tcp:127.0.0.1:30432` (NSFT) |
 
+The default profile starts at a 2.4-GHz RX LO and configuration epoch zero.
+The ARM service reads the live AD9361 RX LO, sampling frequency, and RF
+bandwidth immediately before and after every IIO block. If those values change
+during capture, that block is discarded and retried; a stable changed profile
+increments the configuration epoch and its actual sample rate and center
+frequency are carried in both packets. The packet timestamp is taken at block
+capture completion, before FFT processing.
+
+The FFT endpoint intentionally has one active client. Additional connections
+wait in the listener queue, and a client that does not drain its TCP receive
+stream is disconnected after the two-second per-update send deadline. The
+evidence collector retains exactly the selected channel-0/channel-1 packet
+bytes, even when TCP also delivered bytes from a later update in the same
+receive call.
+
 ## Known allowed boot diagnostics
 
 The launcher treats these as explicit model limitations, not silent success:
@@ -60,13 +76,15 @@ Any new serious kernel/QEMU diagnostic is a regression until it is understood
 and deliberately added to the allowlist. USB, external synthesizers, suspend,
 RTC, and mDNS are therefore not acceptance claims.
 
-## What this does not establish
+## Layer boundary
 
 This run is block-oriented. Linux AXI-DMAC fills its IIO buffer, then ARM copies
 the completed block to a separate FFT DMA window. The guest stops and restarts
 the IIO buffer for each update and does not report an uninterrupted input
-sequence. It therefore does not prove sustained, gap-free 61.44-MSPS processing,
-a 20-Hz update cadence, or a direct AD9361-to-FFT PL stream.
+sequence. The separate continuous reference-PL runtime establishes consecutive
+2x2 sample indices, retune-atomic averaging, a bounded result queue and explicit
+lag/loss semantics at the same NSFT contact. It does not pretend that a
+dependency-free host model is a post-route, wall-clock 61.44-MSPS FPGA.
 
 The fixed `/dev/mem` windows are isolated from Linux with `mem=384M` only in the
 QEMU harness. Physical deployment requires a device-tree reservation and a
@@ -75,5 +93,8 @@ streaming design. The FFT device is executable virtual hardware but is not
 synthesized RTL; XC7Z020 DSP/BRAM use, CDC, timing closure, and the board's
 50-MHz RF passband remain arrival/implementation gates.
 
-USB gadget behavior is also outside this runtime. See [USB](USB.md), the
+The public device tree's host-mode USB controller remains outside this QEMU
+runtime. The complete appliance composes it with the standard USB/IP device
+adapter; native IIO can bridge to this same released guest `iiod`. See the
+[complete appliance](VIRTUAL_APPLIANCE.md), [USB](USB.md), the
 [FFT ABI](P210_FFT_ABI.md), and the [50-MHz plan](WIDEBAND_50MHZ.md).

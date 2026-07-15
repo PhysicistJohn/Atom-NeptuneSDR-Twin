@@ -60,15 +60,21 @@
 #define DMAC_REG_TRANSFER_DONE          0x428
 #define DMAC_REG_ACTIVE_TRANSFER_ID     0x42c
 #define DMAC_REG_STATUS                 0x430
-#define DMAC_REG_CURRENT_SRC_ADDR       0x434
-#define DMAC_REG_CURRENT_DEST_ADDR      0x438
+#define DMAC_REG_CURRENT_DEST_ADDR      0x434
+#define DMAC_REG_CURRENT_SRC_ADDR       0x438
 
 #define DMAC_IRQ_SOT                    BIT(0)
 #define DMAC_IRQ_EOT                    BIT(1)
+#define DMAC_IRQ_MASK_ALL               (DMAC_IRQ_SOT | DMAC_IRQ_EOT)
 #define DMAC_FLAG_CYCLIC                BIT(0)
+#define DMAC_FLAG_TLAST                 BIT(1)
 #define DMAC_CONTROL_ENABLE             BIT(0)
+#define DMAC_CONTROL_PAUSE              BIT(1)
+#define DMAC_CONTROL_MASK               (DMAC_CONTROL_ENABLE | \
+                                         DMAC_CONTROL_PAUSE)
 #define DMAC_X_LENGTH_MASK              0x00ffffff
-#define P210_DMA_BYTES_PER_SECOND       245760000ULL
+#define DMAC_ADDRESS_MASK               0x1ffffff8U
+#define P210_SAMPLE_RATE_HZ             61440000ULL
 #define P210_DMA_CHUNK                   4096
 #define P210_DMAC_QUEUE_DEPTH            4
 
@@ -97,24 +103,29 @@ typedef struct P210Region {
     MemoryRegion iomem;
 } P210Region;
 
+typedef struct P210DMACDescriptor {
+    uint32_t id;
+    uint32_t flags;
+    uint32_t dest_address;
+    uint32_t src_address;
+    uint32_t x_length;
+    uint32_t y_length;
+    uint32_t dest_stride;
+    uint32_t src_stride;
+    uint8_t rx_scan_mask;
+} P210DMACDescriptor;
+
 typedef struct P210DMAC {
     P210SDRState *parent;
     QEMUTimer *timer;
     uint32_t regs[P210_DMAC_BYTES / sizeof(uint32_t)];
-    struct {
-        uint32_t id;
-        uint32_t flags;
-        uint32_t dest_address;
-        uint32_t src_address;
-        uint32_t x_length;
-        uint32_t y_length;
-        uint32_t dest_stride;
-        uint32_t src_stride;
-    } queue[P210_DMAC_QUEUE_DEPTH];
+    P210DMACDescriptor queue[P210_DMAC_QUEUE_DEPTH];
     uint8_t queue_head;
     uint8_t queue_count;
     bool to_memory;
+    bool supports_cyclic;
     bool running;
+    uint64_t pause_remaining_ns;
 } P210DMAC;
 
 struct P210SDRState {
@@ -138,22 +149,22 @@ DECLARE_INSTANCE_CHECKER(P210SDRState, P210_SDR, TYPE_P210_SDR)
 
 static void p210_dmac_update_irq(P210DMAC *dmac)
 {
-    uint32_t pending = dmac->regs[DMAC_REG_IRQ_PENDING / 4];
-    uint32_t mask = dmac->regs[DMAC_REG_IRQ_MASK / 4];
-    uint32_t source = pending & ~mask;
+    uint32_t source = dmac->regs[DMAC_REG_IRQ_SOURCE / 4] &
+                      DMAC_IRQ_MASK_ALL;
+    uint32_t mask = dmac->regs[DMAC_REG_IRQ_MASK / 4] &
+                    DMAC_IRQ_MASK_ALL;
+    uint32_t pending = source & ~mask;
     unsigned int irq = dmac->to_memory ? 0 : 1;
 
-    dmac->regs[DMAC_REG_IRQ_SOURCE / 4] = source;
-    qemu_set_irq(dmac->parent->irq[irq], source != 0);
+    dmac->regs[DMAC_REG_IRQ_PENDING / 4] = pending;
+    qemu_set_irq(dmac->parent->irq[irq], pending != 0);
 }
 
 static uint64_t p210_dmac_descriptor_length(P210DMAC *dmac,
                                             unsigned int index)
 {
-    uint64_t x = (uint64_t)dmac->queue[index].x_length + 1;
-    uint64_t y = (uint64_t)dmac->queue[index].y_length + 1;
-
-    return x * y;
+    /* The pinned public P210 XSA sets DMA_2D_TRANSFER=false on both DMACs. */
+    return (uint64_t)dmac->queue[index].x_length + 1;
 }
 
 /* One cycle of a signed Q1.15 sine.  The two NCOs use integer LUT steps so a
@@ -204,9 +215,9 @@ static int16_t p210_rx_tone_sample(P210SDRState *s, unsigned int channel,
     return value / 32767;
 }
 
-static size_t p210_rx_fill(P210SDRState *s, uint8_t *buffer, size_t count)
+static size_t p210_rx_fill(P210SDRState *s, uint8_t scan_mask,
+                           uint8_t *buffer, size_t count)
 {
-    uint8_t scan_mask = p210_rx_scan_mask(s);
     unsigned int scan_channels = ctpop8(scan_mask);
     size_t frame_bytes = scan_channels * sizeof(int16_t);
     size_t frames;
@@ -241,23 +252,60 @@ static size_t p210_rx_fill(P210SDRState *s, uint8_t *buffer, size_t count)
     return frames;
 }
 
-static void p210_dmac_copy(P210DMAC *dmac, unsigned int index)
+static uint64_t p210_dmac_bytes_per_second(P210DMAC *dmac,
+                                           unsigned int index)
+{
+    unsigned int bytes_per_frame = P210_RX_CHANNELS * sizeof(int16_t);
+
+    if (dmac->to_memory) {
+        unsigned int scan_channels =
+            ctpop8(dmac->queue[index].rx_scan_mask);
+
+        if (scan_channels) {
+            bytes_per_frame = scan_channels * sizeof(int16_t);
+        }
+    }
+
+    return P210_SAMPLE_RATE_HZ * bytes_per_frame;
+}
+
+static uint64_t p210_dmac_descriptor_delay(P210DMAC *dmac,
+                                            unsigned int index)
+{
+    return MAX(1ULL,
+               muldiv64_round_up(p210_dmac_descriptor_length(dmac, index),
+                                 NANOSECONDS_PER_SECOND,
+                                 p210_dmac_bytes_per_second(dmac, index)));
+}
+
+static MemTxResult p210_dmac_copy(P210DMAC *dmac, unsigned int index)
 {
     uint8_t generated[P210_DMA_CHUNK];
     uint8_t discard[P210_DMA_CHUNK];
     uint64_t remaining = p210_dmac_descriptor_length(dmac, index);
-    dma_addr_t address = dmac->to_memory ? dmac->queue[index].dest_address :
-                                           dmac->queue[index].src_address;
+    dma_addr_t address = dmac->to_memory ?
+        dmac->queue[index].dest_address : dmac->queue[index].src_address;
+    unsigned int scan_channels = ctpop8(dmac->queue[index].rx_scan_mask);
+    size_t frame_bytes = scan_channels * sizeof(int16_t);
 
     while (remaining) {
         size_t count = MIN(remaining, (uint64_t)P210_DMA_CHUNK);
         size_t generated_frames = 0;
         MemTxResult result;
 
+        /* Keep an IIO scan frame intact across the implementation's private
+         * copy chunks.  In particular, a three-channel scan is six bytes and
+         * does not divide the 4096-byte scratch buffer. */
+        if (dmac->to_memory && frame_bytes && remaining > count) {
+            count -= count % frame_bytes;
+        }
         if (dmac->to_memory) {
-            generated_frames = p210_rx_fill(dmac->parent, generated, count);
-            result = dma_memory_write(&address_space_memory, address, generated,
-                                      count, MEMTXATTRS_UNSPECIFIED);
+            generated_frames = p210_rx_fill(
+                dmac->parent, dmac->queue[index].rx_scan_mask,
+                generated, count);
+            result = dma_memory_write(&address_space_memory, address,
+                                      generated, count,
+                                      MEMTXATTRS_UNSPECIFIED);
         } else {
             result = dma_memory_read(&address_space_memory, address, discard,
                                      count, MEMTXATTRS_UNSPECIFIED);
@@ -266,7 +314,9 @@ static void p210_dmac_copy(P210DMAC *dmac, unsigned int index)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "p210-sdr: DMA address error at 0x%" HWADDR_PRIx
                           " length 0x%zx\n", address, count);
-            break;
+            dmac->regs[(dmac->to_memory ? DMAC_REG_CURRENT_DEST_ADDR :
+                        DMAC_REG_CURRENT_SRC_ADDR) / 4] = address;
+            return result;
         }
         if (dmac->to_memory) {
             dmac->parent->rx_sample_index += generated_frames;
@@ -277,32 +327,36 @@ static void p210_dmac_copy(P210DMAC *dmac, unsigned int index)
 
     dmac->regs[(dmac->to_memory ? DMAC_REG_CURRENT_DEST_ADDR :
                 DMAC_REG_CURRENT_SRC_ADDR) / 4] = address;
+    return MEMTX_OK;
 }
 
 static void p210_dmac_schedule_head(P210DMAC *dmac)
 {
     unsigned int index;
-    uint64_t length;
     uint64_t delay;
 
     if (dmac->running || !dmac->queue_count) {
         return;
     }
     index = dmac->queue_head;
-    length = p210_dmac_descriptor_length(dmac, index);
     dmac->regs[DMAC_REG_ACTIVE_TRANSFER_ID / 4] = dmac->queue[index].id;
-    dmac->regs[DMAC_REG_STATUS / 4] = 0;
     dmac->running = true;
 
-    delay = MAX(1ULL, muldiv64(length, NANOSECONDS_PER_SECOND,
-                              P210_DMA_BYTES_PER_SECOND));
-    timer_mod_ns(dmac->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay);
+    delay = p210_dmac_descriptor_delay(dmac, index);
+    if (dmac->regs[DMAC_REG_CONTROL / 4] & DMAC_CONTROL_PAUSE) {
+        dmac->pause_remaining_ns = delay;
+    } else {
+        dmac->pause_remaining_ns = 0;
+        timer_mod_ns(dmac->timer,
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay);
+    }
 }
 
 static bool p210_dmac_accept_descriptor(P210DMAC *dmac)
 {
     unsigned int tail;
     uint32_t id;
+    bool cyclic;
 
     if (!(dmac->regs[DMAC_REG_CONTROL / 4] & DMAC_CONTROL_ENABLE) ||
         dmac->queue_count == P210_DMAC_QUEUE_DEPTH) {
@@ -322,15 +376,19 @@ static bool p210_dmac_accept_descriptor(P210DMAC *dmac)
     dmac->queue[tail].y_length = dmac->regs[DMAC_REG_Y_LENGTH / 4];
     dmac->queue[tail].dest_stride = dmac->regs[DMAC_REG_DEST_STRIDE / 4];
     dmac->queue[tail].src_stride = dmac->regs[DMAC_REG_SRC_STRIDE / 4];
+    dmac->queue[tail].rx_scan_mask = dmac->to_memory ?
+        p210_rx_scan_mask(dmac->parent) : 0;
     dmac->queue_count++;
+    cyclic = dmac->queue[tail].flags & DMAC_FLAG_CYCLIC;
 
-    /* The four hardware IDs are also the four TRANSFER_DONE bitmap bits. */
-    dmac->regs[DMAC_REG_TRANSFER_DONE / 4] &= ~BIT(id);
-    dmac->regs[DMAC_REG_TRANSFER_ID / 4] =
-        (id + 1) & (P210_DMAC_QUEUE_DEPTH - 1);
     dmac->regs[DMAC_REG_START_TRANSFER / 4] = 0;
-    if (!(dmac->queue[tail].flags & DMAC_FLAG_CYCLIC)) {
-        dmac->regs[DMAC_REG_IRQ_PENDING / 4] |= DMAC_IRQ_SOT;
+    if (!cyclic) {
+        /* In 4.00.a the SOT event advances the transfer ID.  Cyclic mode
+         * suppresses SOT, so it also leaves TRANSFER_ID/DONE unchanged. */
+        dmac->regs[DMAC_REG_TRANSFER_DONE / 4] &= ~BIT(id);
+        dmac->regs[DMAC_REG_TRANSFER_ID / 4] =
+            (id + 1) & (P210_DMAC_QUEUE_DEPTH - 1);
+        dmac->regs[DMAC_REG_IRQ_SOURCE / 4] |= DMAC_IRQ_SOT;
     }
     p210_dmac_update_irq(dmac);
     p210_dmac_schedule_head(dmac);
@@ -343,26 +401,38 @@ static void p210_dmac_complete(void *opaque)
     unsigned int index = dmac->queue_head;
     uint32_t id_bit;
     uint32_t flags;
+    MemTxResult result;
 
     if (!dmac->running || !dmac->queue_count) {
         return;
     }
     id_bit = BIT(dmac->queue[index].id);
     flags = dmac->queue[index].flags;
+    dmac->pause_remaining_ns = 0;
 
-    p210_dmac_copy(dmac, index);
+    result = p210_dmac_copy(dmac, index);
+    if (result != MEMTX_OK) {
+        /* AXI-DMAC 4.00.a retires a descriptor on an AXI error and raises the
+         * normal completion event.  STATUS is reserved/read-zero and the XSA
+         * disables the diagnostics interface, so the QEMU guest log is the
+         * only extra diagnostic contact. */
+        flags &= ~DMAC_FLAG_CYCLIC;
+    }
 
     if (flags & DMAC_FLAG_CYCLIC) {
-        uint64_t delay = MAX(1ULL,
-            muldiv64(p210_dmac_descriptor_length(dmac, index),
-                     NANOSECONDS_PER_SECOND,
-                     P210_DMA_BYTES_PER_SECOND));
-        timer_mod_ns(dmac->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay);
+        uint64_t delay = p210_dmac_descriptor_delay(dmac, index);
+
+        if (dmac->regs[DMAC_REG_CONTROL / 4] & DMAC_CONTROL_PAUSE) {
+            dmac->pause_remaining_ns = delay;
+        } else {
+            timer_mod_ns(dmac->timer,
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay);
+        }
         return;
     }
 
     dmac->regs[DMAC_REG_TRANSFER_DONE / 4] |= id_bit;
-    dmac->regs[DMAC_REG_IRQ_PENDING / 4] |= DMAC_IRQ_EOT;
+    dmac->regs[DMAC_REG_IRQ_SOURCE / 4] |= DMAC_IRQ_EOT;
     dmac->queue_head = (dmac->queue_head + 1) % P210_DMAC_QUEUE_DEPTH;
     dmac->queue_count--;
     dmac->running = false;
@@ -440,7 +510,10 @@ static void p210_dmac_write(void *opaque, hwaddr offset, uint64_t value,
 
     switch (offset) {
     case DMAC_REG_IRQ_PENDING:
-        dmac->regs[offset / 4] &= ~val;
+        /* IRQ_PENDING is the masked view.  Writes acknowledge the
+         * corresponding sticky raw IRQ_SOURCE bits in the ADI core. */
+        dmac->regs[DMAC_REG_IRQ_SOURCE / 4] &=
+            ~(val & DMAC_IRQ_MASK_ALL);
         p210_dmac_update_irq(dmac);
         return;
     case DMAC_REG_IRQ_SOURCE:
@@ -452,7 +525,13 @@ static void p210_dmac_write(void *opaque, hwaddr offset, uint64_t value,
     case DMAC_REG_CURRENT_DEST_ADDR:
         return;
     case DMAC_REG_CONTROL:
-        dmac->regs[offset / 4] = val & DMAC_CONTROL_ENABLE;
+    {
+        uint32_t old = dmac->regs[offset / 4];
+        uint32_t control = val & DMAC_CONTROL_MASK;
+        bool was_paused = old & DMAC_CONTROL_PAUSE;
+        bool paused = control & DMAC_CONTROL_PAUSE;
+
+        dmac->regs[offset / 4] = control;
         if (!(val & DMAC_CONTROL_ENABLE)) {
             timer_del(dmac->timer);
             memset(dmac->queue, 0, sizeof(dmac->queue));
@@ -463,10 +542,32 @@ static void p210_dmac_write(void *opaque, hwaddr offset, uint64_t value,
             dmac->regs[DMAC_REG_START_TRANSFER / 4] = 0;
             dmac->regs[DMAC_REG_TRANSFER_DONE / 4] = 0;
             dmac->regs[DMAC_REG_ACTIVE_TRANSFER_ID / 4] = 0;
+            dmac->regs[DMAC_REG_STATUS / 4] = 0;
+            dmac->pause_remaining_ns = 0;
+        } else if (!was_paused && paused && dmac->running) {
+            int64_t expiry = timer_expire_time_ns(dmac->timer);
+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+            dmac->pause_remaining_ns = expiry > now ? expiry - now : 1;
+            timer_del(dmac->timer);
+        } else if (was_paused && !paused && dmac->running) {
+            uint64_t delay = dmac->pause_remaining_ns;
+
+            if (!delay) {
+                delay = p210_dmac_descriptor_delay(dmac, dmac->queue_head);
+            }
+            dmac->pause_remaining_ns = 0;
+            timer_mod_ns(dmac->timer,
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay);
         }
         return;
+    }
     case DMAC_REG_START_TRANSFER:
         if ((val & 1) && dmac->regs[offset / 4] == 0) {
+            if (!(dmac->regs[DMAC_REG_CONTROL / 4] &
+                  DMAC_CONTROL_ENABLE)) {
+                return;
+            }
             dmac->regs[offset / 4] = 1;
             p210_dmac_accept_descriptor(dmac);
         }
@@ -478,11 +579,33 @@ static void p210_dmac_write(void *opaque, hwaddr offset, uint64_t value,
          * DIV_ROUND_UP() overflow and eventually divide by zero. */
         dmac->regs[offset / 4] = val & DMAC_X_LENGTH_MASK;
         return;
+    case DMAC_REG_Y_LENGTH:
+    case DMAC_REG_DEST_STRIDE:
+    case DMAC_REG_SRC_STRIDE:
+        /* DMA_2D_TRANSFER=false: the physical registers read as zero and the
+         * programmed values do not participate in a transfer. */
+        dmac->regs[offset / 4] = 0;
+        return;
+    case DMAC_REG_DEST_ADDRESS:
+        dmac->regs[offset / 4] = dmac->to_memory ?
+            val & DMAC_ADDRESS_MASK : 0;
+        return;
+    case DMAC_REG_SRC_ADDRESS:
+        dmac->regs[offset / 4] = dmac->to_memory ?
+            0 : val & DMAC_ADDRESS_MASK;
+        return;
+    case DMAC_REG_FLAGS:
+        dmac->regs[offset / 4] = val & DMAC_FLAG_TLAST;
+        if (dmac->supports_cyclic) {
+            dmac->regs[offset / 4] |= val & DMAC_FLAG_CYCLIC;
+        }
+        return;
+    case DMAC_REG_IRQ_MASK:
+        dmac->regs[offset / 4] = val & DMAC_IRQ_MASK_ALL;
+        p210_dmac_update_irq(dmac);
+        return;
     default:
         dmac->regs[offset / 4] = val;
-        if (offset == DMAC_REG_IRQ_MASK) {
-            p210_dmac_update_irq(dmac);
-        }
         return;
     }
 }
@@ -527,8 +650,15 @@ static void p210_sdr_reset(DeviceState *dev)
     s->tx_core[P210_REG_DRP_STATUS / 4] = P210_DRP_LOCKED;
     s->rx_dmac.regs[P210_REG_VERSION / 4] = P210_DMAC_VERSION;
     s->tx_dmac.regs[P210_REG_VERSION / 4] = P210_DMAC_VERSION;
+    s->rx_dmac.regs[DMAC_REG_IRQ_MASK / 4] = DMAC_IRQ_MASK_ALL;
+    s->tx_dmac.regs[DMAC_REG_IRQ_MASK / 4] = DMAC_IRQ_MASK_ALL;
+    s->rx_dmac.regs[DMAC_REG_FLAGS / 4] = DMAC_FLAG_TLAST;
+    s->tx_dmac.regs[DMAC_REG_FLAGS / 4] =
+        DMAC_FLAG_CYCLIC | DMAC_FLAG_TLAST;
     s->rx_dmac.running = false;
     s->tx_dmac.running = false;
+    s->rx_dmac.pause_remaining_ns = 0;
+    s->tx_dmac.pause_remaining_ns = 0;
     s->rx_dmac.queue_head = 0;
     s->rx_dmac.queue_count = 0;
     s->tx_dmac.queue_head = 0;
@@ -564,10 +694,12 @@ static void p210_sdr_init(Object *obj)
 
     s->rx_dmac.parent = s;
     s->rx_dmac.to_memory = true;
+    s->rx_dmac.supports_cyclic = false;
     s->rx_dmac.timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, p210_dmac_complete,
                                     &s->rx_dmac);
     s->tx_dmac.parent = s;
     s->tx_dmac.to_memory = false;
+    s->tx_dmac.supports_cyclic = true;
     s->tx_dmac.timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, p210_dmac_complete,
                                     &s->tx_dmac);
 }
@@ -580,10 +712,119 @@ static void p210_sdr_finalize(Object *obj)
     timer_free(s->tx_dmac.timer);
 }
 
-static const VMStateDescription vmstate_p210_sdr = {
-    .name = TYPE_P210_SDR,
+static const VMStateDescription vmstate_p210_dmac_descriptor = {
+    .name = TYPE_P210_SDR "/descriptor",
     .version_id = 1,
     .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(id, P210DMACDescriptor),
+        VMSTATE_UINT32(flags, P210DMACDescriptor),
+        VMSTATE_UINT32(dest_address, P210DMACDescriptor),
+        VMSTATE_UINT32(src_address, P210DMACDescriptor),
+        VMSTATE_UINT32(x_length, P210DMACDescriptor),
+        VMSTATE_UINT32(y_length, P210DMACDescriptor),
+        VMSTATE_UINT32(dest_stride, P210DMACDescriptor),
+        VMSTATE_UINT32(src_stride, P210DMACDescriptor),
+        VMSTATE_UINT8(rx_scan_mask, P210DMACDescriptor),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static int p210_sdr_post_load(void *opaque, int version_id)
+{
+    P210SDRState *s = opaque;
+    P210DMAC *dmacs[] = { &s->rx_dmac, &s->tx_dmac };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(dmacs); i++) {
+        P210DMAC *dmac = dmacs[i];
+        bool paused = dmac->regs[DMAC_REG_CONTROL / 4] &
+                      DMAC_CONTROL_PAUSE;
+        unsigned int queued;
+
+        if (dmac->queue_head >= P210_DMAC_QUEUE_DEPTH ||
+            dmac->queue_count > P210_DMAC_QUEUE_DEPTH ||
+            dmac->running != (dmac->queue_count != 0) ||
+            (!(dmac->regs[DMAC_REG_CONTROL / 4] & DMAC_CONTROL_ENABLE) &&
+             dmac->queue_count)) {
+            return -EINVAL;
+        }
+
+        for (queued = 0; queued < dmac->queue_count; queued++) {
+            unsigned int index =
+                (dmac->queue_head + queued) % P210_DMAC_QUEUE_DEPTH;
+            P210DMACDescriptor *descriptor = &dmac->queue[index];
+            uint32_t allowed_flags = DMAC_FLAG_TLAST |
+                (dmac->supports_cyclic ? DMAC_FLAG_CYCLIC : 0);
+            uint32_t address = dmac->to_memory ? descriptor->dest_address :
+                                                 descriptor->src_address;
+
+            if (descriptor->id >= P210_DMAC_QUEUE_DEPTH ||
+                descriptor->flags & ~allowed_flags ||
+                descriptor->x_length & ~DMAC_X_LENGTH_MASK ||
+                address & ~DMAC_ADDRESS_MASK ||
+                descriptor->y_length || descriptor->dest_stride ||
+                descriptor->src_stride ||
+                descriptor->rx_scan_mask & ~((1U << P210_RX_CHANNELS) - 1)) {
+                return -EINVAL;
+            }
+        }
+
+        /* These capabilities are fixed by the pinned public P210 XSA. */
+        dmac->regs[DMAC_REG_IRQ_MASK / 4] &= DMAC_IRQ_MASK_ALL;
+        dmac->regs[DMAC_REG_IRQ_SOURCE / 4] &= DMAC_IRQ_MASK_ALL;
+        dmac->regs[DMAC_REG_CONTROL / 4] &= DMAC_CONTROL_MASK;
+        dmac->regs[DMAC_REG_START_TRANSFER / 4] &= 1;
+        dmac->regs[DMAC_REG_FLAGS / 4] &= DMAC_FLAG_TLAST |
+            (dmac->supports_cyclic ? DMAC_FLAG_CYCLIC : 0);
+        dmac->regs[DMAC_REG_X_LENGTH / 4] &= DMAC_X_LENGTH_MASK;
+        dmac->regs[DMAC_REG_TRANSFER_ID / 4] &=
+            P210_DMAC_QUEUE_DEPTH - 1;
+        dmac->regs[DMAC_REG_TRANSFER_DONE / 4] &=
+            (1U << P210_DMAC_QUEUE_DEPTH) - 1;
+        dmac->regs[DMAC_REG_ACTIVE_TRANSFER_ID / 4] &=
+            P210_DMAC_QUEUE_DEPTH - 1;
+        dmac->regs[DMAC_REG_Y_LENGTH / 4] = 0;
+        dmac->regs[DMAC_REG_DEST_STRIDE / 4] = 0;
+        dmac->regs[DMAC_REG_SRC_STRIDE / 4] = 0;
+        dmac->regs[DMAC_REG_STATUS / 4] = 0;
+        if (dmac->to_memory) {
+            dmac->regs[DMAC_REG_DEST_ADDRESS / 4] &= DMAC_ADDRESS_MASK;
+            dmac->regs[DMAC_REG_SRC_ADDRESS / 4] = 0;
+        } else {
+            dmac->regs[DMAC_REG_DEST_ADDRESS / 4] = 0;
+            dmac->regs[DMAC_REG_SRC_ADDRESS / 4] &= DMAC_ADDRESS_MASK;
+        }
+
+        if (!dmac->running) {
+            timer_del(dmac->timer);
+            dmac->pause_remaining_ns = 0;
+        } else if (paused) {
+            timer_del(dmac->timer);
+            if (!dmac->pause_remaining_ns) {
+                dmac->pause_remaining_ns =
+                    p210_dmac_descriptor_delay(dmac, dmac->queue_head);
+            }
+        } else if (!timer_pending(dmac->timer)) {
+            uint64_t delay = dmac->pause_remaining_ns;
+
+            if (!delay) {
+                delay = p210_dmac_descriptor_delay(dmac, dmac->queue_head);
+            }
+            dmac->pause_remaining_ns = 0;
+            timer_mod_ns(dmac->timer,
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay);
+        }
+        p210_dmac_update_irq(dmac);
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_p210_sdr = {
+    .name = TYPE_P210_SDR,
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .post_load = p210_sdr_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(rx_core, P210SDRState,
                              P210_RX_CORE_BYTES / sizeof(uint32_t)),
@@ -593,6 +834,24 @@ static const VMStateDescription vmstate_p210_sdr = {
                              P210_DMAC_BYTES / sizeof(uint32_t)),
         VMSTATE_UINT32_ARRAY(tx_dmac.regs, P210SDRState,
                              P210_DMAC_BYTES / sizeof(uint32_t)),
+        VMSTATE_STRUCT_ARRAY(rx_dmac.queue, P210SDRState,
+                             P210_DMAC_QUEUE_DEPTH, 1,
+                             vmstate_p210_dmac_descriptor,
+                             P210DMACDescriptor),
+        VMSTATE_STRUCT_ARRAY(tx_dmac.queue, P210SDRState,
+                             P210_DMAC_QUEUE_DEPTH, 1,
+                             vmstate_p210_dmac_descriptor,
+                             P210DMACDescriptor),
+        VMSTATE_UINT8(rx_dmac.queue_head, P210SDRState),
+        VMSTATE_UINT8(rx_dmac.queue_count, P210SDRState),
+        VMSTATE_BOOL(rx_dmac.running, P210SDRState),
+        VMSTATE_UINT64(rx_dmac.pause_remaining_ns, P210SDRState),
+        VMSTATE_TIMER_PTR(rx_dmac.timer, P210SDRState),
+        VMSTATE_UINT8(tx_dmac.queue_head, P210SDRState),
+        VMSTATE_UINT8(tx_dmac.queue_count, P210SDRState),
+        VMSTATE_BOOL(tx_dmac.running, P210SDRState),
+        VMSTATE_UINT64(tx_dmac.pause_remaining_ns, P210SDRState),
+        VMSTATE_TIMER_PTR(tx_dmac.timer, P210SDRState),
         VMSTATE_UINT64(rx_sample_index, P210SDRState),
         VMSTATE_END_OF_LIST()
     },

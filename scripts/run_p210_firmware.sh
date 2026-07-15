@@ -22,6 +22,8 @@ CAPTURE=${P210_FFT_CAPTURE:-"$RUNTIME/p210-qemu-fft.nsft"}
 REPORT=${P210_FFT_REPORT:-"$RUNTIME/p210-qemu-fft-report.json"}
 IIO_PORT=${P210_IIO_HOST_PORT:-30431}
 FFT_PORT=${P210_FFT_HOST_PORT:-30432}
+UART_PORT=${P210_UART_HOST_PORT:-30433}
+GDB_PORT=
 IIO_REPORT=${P210_IIO_REPORT:-"$RUNTIME/p210-qemu-iio-info.txt"}
 TIMEOUT=180
 MODE=selftest
@@ -50,11 +52,14 @@ Options:
   --log FILE          Guest serial log path
   --capture FILE      NSFT wire-capture path
   --iio-report FILE   Retained upstream iio_info output path
+  --uart-port PORT    Loopback UART1 console port (default: 30433)
+  --gdb PORT          Opt-in loopback QEMU GDB endpoint; disabled by default
   -h, --help          Show this help
 
 Endpoints while running:
   iiod TCP            127.0.0.1:30431 (override P210_IIO_HOST_PORT)
   NSFT FFT TCP        127.0.0.1:30432 (override P210_FFT_HOST_PORT)
+  UART1 console       127.0.0.1:30433 (override P210_UART_HOST_PORT)
 EOF
 }
 
@@ -87,6 +92,16 @@ while [ "$#" -gt 0 ]; do
             IIO_REPORT=$2
             shift 2
             ;;
+        --uart-port)
+            [ "$#" -ge 2 ] || die '--uart-port requires a value'
+            UART_PORT=$2
+            shift 2
+            ;;
+        --gdb)
+            [ "$#" -ge 2 ] || die '--gdb requires a port'
+            GDB_PORT=$2
+            shift 2
+            ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -96,12 +111,26 @@ case "$TIMEOUT" in
     ''|*[!0-9]*) die '--timeout must be a positive integer' ;;
 esac
 [ "$TIMEOUT" -gt 0 ] || die '--timeout must be a positive integer'
-case "$IIO_PORT:$FFT_PORT" in
+case "$IIO_PORT:$FFT_PORT:$UART_PORT${GDB_PORT:+:$GDB_PORT}" in
     *[!0-9:]*) die 'host ports must be decimal integers' ;;
 esac
 [ "$IIO_PORT" -gt 0 ] && [ "$IIO_PORT" -le 65535 ] || die 'invalid iiod host port'
 [ "$FFT_PORT" -gt 0 ] && [ "$FFT_PORT" -le 65535 ] || die 'invalid FFT host port'
-[ "$IIO_PORT" != "$FFT_PORT" ] || die 'iiod and FFT host ports must differ'
+[ "$UART_PORT" -gt 0 ] && [ "$UART_PORT" -le 65535 ] || die 'invalid UART host port'
+[ -z "$GDB_PORT" ] || {
+    [ "$GDB_PORT" -gt 0 ] && [ "$GDB_PORT" -le 65535 ] || die 'invalid GDB host port'
+}
+ports="$IIO_PORT $FFT_PORT $UART_PORT${GDB_PORT:+ $GDB_PORT}"
+seen=
+for port in $ports; do
+    case " $seen " in
+        *" $port "*) die 'iiod, FFT, UART, and GDB host ports must differ' ;;
+    esac
+    seen="$seen $port"
+done
+case "$LOG" in
+    *,*) die '--log path cannot contain a comma when used by the QEMU UART chardev' ;;
+esac
 
 if [ "$BUILD" = yes ]; then
     "$ROOT/scripts/build_p210_qemu.sh"
@@ -183,7 +212,7 @@ trap cleanup 0
 trap 'exit 130' 2
 trap 'exit 143' 15
 
-"$QEMU" \
+set -- "$QEMU" \
     -machine xilinx-zynq-a9,p210=on \
     -cpu cortex-a9 \
     -m 512M \
@@ -194,10 +223,15 @@ trap 'exit 143' 15
     -append 'console=ttyPS0,115200 earlycon=cdns,mmio,0xe0001000,115200n8 rdinit=/init rw loglevel=7 mem=384M' \
     -nic "user,hostfwd=tcp:127.0.0.1:${IIO_PORT}-10.0.2.15:30431,hostfwd=tcp:127.0.0.1:${FFT_PORT}-10.0.2.15:30432" \
     -display none \
+    -chardev "socket,id=uart1,host=127.0.0.1,port=${UART_PORT},server=on,wait=off,logfile=$LOG,logappend=off" \
     -serial null \
-    -serial "file:$LOG" \
+    -serial chardev:uart1 \
     -monitor none \
-    -no-reboot \
+    -no-reboot
+if [ -n "$GDB_PORT" ]; then
+    set -- "$@" -gdb "tcp:127.0.0.1:$GDB_PORT"
+fi
+"$@" \
     >"$QEMU_STDERR" 2>&1 &
 qemu_pid=$!
 
@@ -294,10 +328,22 @@ audit_runtime_errors() {
 
 audit_runtime_errors
 
+# Readiness on the serial log proves the chardev's file side. Independently
+# prove that its loopback console side accepts a development client.
+python3 - "$UART_PORT" <<'PY'
+import socket
+import sys
+
+with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2.0):
+    pass
+PY
+
 if [ "$MODE" = serve ]; then
     printf '%s\n' 'P210_RUNTIME READY'
     printf 'iiod=ip:127.0.0.1:%s\n' "$IIO_PORT"
     printf 'fft=tcp:127.0.0.1:%s\n' "$FFT_PORT"
+    printf 'uart=tcp:127.0.0.1:%s\n' "$UART_PORT"
+    [ -z "$GDB_PORT" ] || printf 'gdb=tcp:127.0.0.1:%s\n' "$GDB_PORT"
     printf 'serial_log=%s\n' "$LOG"
     printf 'iio_report=%s\n' "$IIO_REPORT"
     printf '%s\n' 'Press Ctrl-C to stop the VM cleanly.'

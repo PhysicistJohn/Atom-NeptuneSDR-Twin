@@ -15,10 +15,13 @@
 #define _GNU_SOURCE
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <math.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,11 +80,11 @@
 #define FFT_STATUS_DONE            (UINT32_C(1) << 1)
 #define FFT_STATUS_ERROR           (UINT32_C(1) << 2)
 
-#define SAMPLE_RATE_HZ             UINT32_C(61440000)
 #define RF_BANDWIDTH_HZ            "50000000\n"
 #define SAMPLE_RATE_TEXT           "61440000\n"
-#define CENTER_FREQUENCY_HZ        UINT64_C(2400000000)
 #define STREAM_PORT                30432U
+#define CLIENT_SEND_TIMEOUT_NS      UINT64_C(2000000000)
+#define CONFIG_CAPTURE_ATTEMPTS     3U
 #define NSFT_HEADER_BYTES          68U
 #define NSFT_CRC_BYTES             4U
 #define NSFT_ENCODING_UINT16_LOG   2U
@@ -98,7 +101,17 @@ static char adc_sysfs[160];
 static char phy_sysfs[160];
 static char adc_device[64];
 
-static void fail(const char *what)
+struct spectrum_metadata {
+    uint32_t sample_rate_hz;
+    uint32_t rf_bandwidth_hz;
+    uint64_t center_frequency_hz;
+    uint32_t config_epoch;
+};
+
+static struct spectrum_metadata observed_metadata;
+static int metadata_initialized;
+
+static _Noreturn void fail(const char *what)
 {
     int saved = errno;
 
@@ -239,17 +252,104 @@ static void write_relative(const char *base, const char *relative,
     write_text(path, text);
 }
 
+static uint64_t read_uint_relative(const char *base, const char *relative)
+{
+    char path[256];
+    char text[64];
+    char *end;
+    unsigned long long parsed;
+    int count;
+
+    count = snprintf(path, sizeof(path), "%s/%s", base, relative);
+    if (count < 0 || (size_t)count >= sizeof(path)) {
+        errno = ENAMETOOLONG;
+        fail("IIO attribute path");
+    }
+    if (read_name(path, text, sizeof(text)) != 0) {
+        fail(path);
+    }
+    errno = 0;
+    parsed = strtoull(text, &end, 10);
+    while (*end && isspace((unsigned char)*end)) {
+        end++;
+    }
+    if (errno || end == text || *end || !parsed) {
+        errno = EINVAL;
+        fail(path);
+    }
+    return (uint64_t)parsed;
+}
+
+static struct spectrum_metadata read_spectrum_metadata(void)
+{
+    struct spectrum_metadata metadata;
+    uint64_t sample_rate = read_uint_relative(
+        phy_sysfs, "in_voltage_sampling_frequency");
+    uint64_t bandwidth = read_uint_relative(
+        phy_sysfs, "in_voltage_rf_bandwidth");
+
+    if (sample_rate > UINT32_MAX || bandwidth > UINT32_MAX) {
+        errno = ERANGE;
+        fail("IIO spectrum metadata range");
+    }
+    metadata.sample_rate_hz = (uint32_t)sample_rate;
+    metadata.rf_bandwidth_hz = (uint32_t)bandwidth;
+    metadata.center_frequency_hz = read_uint_relative(
+        phy_sysfs, "out_altvoltage0_RX_LO_frequency");
+    metadata.config_epoch = 0;
+    return metadata;
+}
+
+static int same_spectrum_configuration(const struct spectrum_metadata *left,
+                                       const struct spectrum_metadata *right)
+{
+    return left->sample_rate_hz == right->sample_rate_hz &&
+           left->rf_bandwidth_hz == right->rf_bandwidth_hz &&
+           left->center_frequency_hz == right->center_frequency_hz;
+}
+
+static struct spectrum_metadata observe_spectrum_metadata(
+    struct spectrum_metadata metadata)
+{
+    int changed = !metadata_initialized ||
+        !same_spectrum_configuration(&metadata, &observed_metadata);
+
+    if (!metadata_initialized) {
+        metadata.config_epoch = 0;
+        metadata_initialized = 1;
+    } else if (same_spectrum_configuration(&metadata, &observed_metadata)) {
+        metadata.config_epoch = observed_metadata.config_epoch;
+    } else {
+        metadata.config_epoch = observed_metadata.config_epoch + 1U;
+    }
+    if (changed) {
+        fprintf(stderr,
+                "NEPTUNE_FFT config-epoch=%u center-frequency=%llu sample-rate=%u rf-bandwidth=%u\n",
+                metadata.config_epoch,
+                (unsigned long long)metadata.center_frequency_hz,
+                metadata.sample_rate_hz, metadata.rf_bandwidth_hz);
+    }
+    observed_metadata = metadata;
+    return metadata;
+}
+
 static void configure_wideband(void)
 {
+    struct spectrum_metadata metadata;
+
     /* These AD9361 IIO attributes are shared-by-type.  Libiio presents them
      * on both voltage channels, but Linux creates one unindexed sysfs file. */
     write_relative(phy_sysfs, "in_voltage_sampling_frequency", SAMPLE_RATE_TEXT);
     write_relative(phy_sysfs, "in_voltage_rf_bandwidth", RF_BANDWIDTH_HZ);
+    metadata = observe_spectrum_metadata(read_spectrum_metadata());
     fprintf(stderr,
-            "NEPTUNE_FFT rf-bandwidth=50000000 sample-rate=61440000\n");
+            "NEPTUNE_FFT rf-bandwidth=%u sample-rate=%u center-frequency=%llu config-epoch=%u\n",
+            metadata.rf_bandwidth_hz, metadata.sample_rate_hz,
+            (unsigned long long)metadata.center_frequency_hz,
+            metadata.config_epoch);
 }
 
-static void capture_iio_frame(void)
+static void capture_iio_block(void)
 {
     int fd;
     size_t received = 0;
@@ -290,6 +390,30 @@ static void capture_iio_frame(void)
     if (close(fd) != 0) {
         fail(adc_device);
     }
+}
+
+static struct spectrum_metadata capture_iio_frame(void)
+{
+    unsigned int attempt;
+
+    for (attempt = 0; attempt < CONFIG_CAPTURE_ATTEMPTS; attempt++) {
+        struct spectrum_metadata before = observe_spectrum_metadata(
+            read_spectrum_metadata());
+        struct spectrum_metadata after;
+
+        capture_iio_block();
+        after = read_spectrum_metadata();
+        if (same_spectrum_configuration(&before, &after)) {
+            after.config_epoch = before.config_epoch;
+            return after;
+        }
+        after = observe_spectrum_metadata(after);
+        fprintf(stderr,
+                "NEPTUNE_FFT capture=discarded reason=config-changed before-epoch=%u after-epoch=%u\n",
+                before.config_epoch, after.config_epoch);
+    }
+    errno = EAGAIN;
+    fail("stable IIO configuration during capture");
 }
 
 static void fft_write(unsigned int offset, uint32_t value)
@@ -372,7 +496,8 @@ static uint16_t encode_log_power(uint32_t power)
 }
 
 static size_t build_nsft_packet(uint8_t *packet, uint32_t sequence,
-                                unsigned int channel, uint64_t timestamp_ns)
+                                unsigned int channel, uint64_t timestamp_ns,
+                                const struct spectrum_metadata *metadata)
 {
     const uint32_t *powers = fft_output + channel * FFT_N;
     uint8_t *payload = packet + NSFT_HEADER_BYTES;
@@ -387,10 +512,10 @@ static size_t build_nsft_packet(uint8_t *packet, uint32_t sequence,
     packet[7] = 0;
     put_be64(packet + 8, sequence);
     put_be32(packet + 16, FFT_N);
-    put_be32(packet + 20, SAMPLE_RATE_HZ);
-    put_be64(packet + 24, CENTER_FREQUENCY_HZ);
+    put_be32(packet + 20, metadata->sample_rate_hz);
+    put_be64(packet + 24, metadata->center_frequency_hz);
     put_be64(packet + 32, timestamp_ns);
-    put_be32(packet + 40, 0);             /* configuration epoch */
+    put_be32(packet + 40, metadata->config_epoch);
     put_be32(packet + 44, 0);             /* first natural-order bin */
     put_be32(packet + 48, FFT_N);
     put_be32(packet + 52, 0);             /* dropped frames */
@@ -407,12 +532,72 @@ static size_t build_nsft_packet(uint8_t *packet, uint32_t sequence,
     return NSFT_HEADER_BYTES + payload_bytes + NSFT_CRC_BYTES;
 }
 
-static int send_all_socket(int socket_fd, const uint8_t *bytes, size_t count)
+static int wait_socket_writable(int socket_fd, uint64_t deadline_ns)
+{
+    struct pollfd descriptor = {
+        .fd = socket_fd,
+        .events = POLLOUT,
+        .revents = 0,
+    };
+
+    for (;;) {
+        uint64_t now = monotonic_nanoseconds();
+        uint64_t remaining;
+        uint64_t milliseconds;
+        int result;
+
+        if (now >= deadline_ns) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        remaining = deadline_ns - now;
+        milliseconds = (remaining + UINT64_C(999999)) / UINT64_C(1000000);
+        if (milliseconds > INT_MAX) {
+            milliseconds = INT_MAX;
+        }
+        descriptor.revents = 0;
+        result = poll(&descriptor, 1, (int)milliseconds);
+        if (result < 0 && errno == EINTR) {
+            continue;
+        }
+        if (result < 0) {
+            return -1;
+        }
+        if (!result) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        if (descriptor.revents & POLLOUT) {
+            return 0;
+        }
+        if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            errno = EPIPE;
+            return -1;
+        }
+    }
+}
+
+static int send_all_socket(int socket_fd, const uint8_t *bytes, size_t count,
+                           uint64_t deadline_ns)
 {
     while (count) {
-        ssize_t sent = send(socket_fd, bytes, count, MSG_NOSIGNAL);
+        ssize_t sent;
+
+        /* Enforce the absolute update deadline even when a slow peer keeps
+         * making tiny amounts of forward progress without returning EAGAIN. */
+        if (monotonic_nanoseconds() >= deadline_ns) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        sent = send(socket_fd, bytes, count, MSG_NOSIGNAL);
 
         if (sent < 0 && errno == EINTR) {
+            continue;
+        }
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (wait_socket_writable(socket_fd, deadline_ns) != 0) {
+                return -1;
+            }
             continue;
         }
         if (sent < 0) {
@@ -424,6 +609,16 @@ static int send_all_socket(int socket_fd, const uint8_t *bytes, size_t count)
         }
         bytes += sent;
         count -= (size_t)sent;
+    }
+    return 0;
+}
+
+static int configure_client_socket(int socket_fd)
+{
+    int flags = fcntl(socket_fd, F_GETFL, 0);
+
+    if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        return -1;
     }
     return 0;
 }
@@ -467,7 +662,7 @@ static int create_listener(void)
     if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0) {
         fail("bind");
     }
-    if (listen(listener, 2) != 0) {
+    if (listen(listener, 1) != 0) {
         fail("listen");
     }
     return listener;
@@ -544,6 +739,8 @@ int main(void)
     listener = create_listener();
     fprintf(stderr,
             "NEPTUNE_FFT ready port=30432 n=65536 channels=2 input=iio-dmac-cpu-copy\n");
+    fprintf(stderr,
+            "NEPTUNE_FFT client-policy=single send-deadline-ms=2000\n");
 
     for (;;) {
         int client = accept(listener, NULL, NULL);
@@ -555,19 +752,32 @@ int main(void)
             fail("accept");
         }
         fprintf(stderr, "NEPTUNE_FFT client=connected\n");
+        if (configure_client_socket(client) != 0) {
+            int saved = errno;
+
+            fprintf(stderr,
+                    "NEPTUNE_FFT client=setup-failed errno=%d (%s)\n",
+                    saved, strerror(saved));
+            close(client);
+            continue;
+        }
         for (;;) {
             uint64_t timestamp;
+            uint64_t send_deadline;
             unsigned int channel;
             int send_error = 0;
+            struct spectrum_metadata metadata;
 
             sequence++;
-            capture_iio_frame();
-            run_fft(sequence);
+            metadata = capture_iio_frame();
             timestamp = monotonic_nanoseconds();
+            run_fft(sequence);
+            send_deadline = monotonic_nanoseconds() + CLIENT_SEND_TIMEOUT_NS;
             for (channel = 0; channel < FFT_CHANNELS; channel++) {
                 size_t count = build_nsft_packet(packet, sequence, channel,
-                                                 timestamp);
-                if (send_all_socket(client, packet, count) != 0) {
+                                                 timestamp, &metadata);
+                if (send_all_socket(client, packet, count,
+                                    send_deadline) != 0) {
                     send_error = errno ? errno : EPIPE;
                     break;
                 }

@@ -72,9 +72,8 @@ For continuous 50 MHz observation, keep the wide sample path on the FPGA side an
 
 ### Default spectrum contract
 
-The project makes the FPGA-spectrum option executable at the software-visible
-block/MMIO contract, while keeping the continuous-stream implementation as a
-separate acceptance item:
+The project makes the FPGA-spectrum option executable at both the
+firmware-visible block/MMIO contract and the continuous reference-PL contact:
 
 ```sh
 neptune-twin fft-plan
@@ -82,14 +81,18 @@ neptune-twin fft-plan
 
 The default architecture budget is a 65,536-point FFT on both channels at
 61.44 MSPS with 65,536 selected bins per channel. Bin spacing is 937.5 Hz.
-The contract model can block-average frames to an effective update rate just
+The continuous runtime block-averages consecutive frames to an effective update rate just
 under 20 Hz, and each power bin is encoded as an unsigned 16-bit log-power
 value. The complete wire contract is `NSFT` version 1 in network byte order
-with sequence/configuration/timestamp/loss fields and CRC32. The current ARM
-runtime intentionally proves one block at a time; it does not average and does
-not claim a 20-Hz or continuous input cadence.
+with sequence/configuration/timestamp/loss fields and CRC32. The ARM runtime
+intentionally proves the firmware-visible path one block at a time. The
+continuous reference runtime owns the RF source, detects any sample-index or
+mixed-epoch discontinuity, never mixes a retune into one result, and stalls at
+bounded egress capacity instead of silently dropping an update. Its snapshot
+reports compute lag explicitly; the requested update rate is a sample-time
+ceiling, not a claim of Python wall-clock throughput.
 
-`SpectrumTCPPublisher` sends complete NSFT updates as one self-framing TCP byte stream; `SpectrumStreamDecoder` accepts arbitrary TCP chunks, enforces the declared maximum length, restores packet boundaries, and validates CRC32. The same stream can use physical Gigabit Ethernet or IP over USB-RNDIS. TCP avoids inventing an application fragmentation protocol: a full 65,536-bin float32 spectrum packet exceeds one UDP datagram.
+`SpectrumTCPPublisher` sends complete NSFT updates as one self-framing TCP byte stream; `SpectrumStreamDecoder` accepts arbitrary TCP chunks, enforces the declared maximum length, restores packet boundaries, and validates CRC32. The virtual appliance exposes that stream on its dedicated spectrum TCP contact; the physical target can carry it over Gigabit Ethernet. The current narrow USB-RNDIS model proxies IIOD on TCP/30431 only, so NSFT-over-RNDIS is a future deployment option rather than a tested virtual contact. TCP avoids inventing an application fragmentation protocol: a full 65,536-bin float32 spectrum packet exceeds one UDP datagram.
 
 Full two-channel spectra use 262,144 payload bytes per update and about 5.24 MB/s at 20 updates/s, plus small per-channel packet headers and CRCs. That fits the model’s conservative 48 MB/s host payload budget with margin. Selecting fewer bins reduces egress linearly.
 
@@ -111,14 +114,23 @@ RX RF-bandwidth attribute to 50 MHz, captures one 65,536-frame time-major
 two-channel IQ16 block, copies it into the FFT input window, runs a deterministic
 two-channel 65,536-point integer FFT, and
 transmits 262,288 bytes for the two NSFT packets.  The host validates packet
-length/framing/CRC and the expected deterministic tone bins.  Official host
-libiio remains connected to the released ARM `iiod` control service during
-the run.
+length/framing/CRC, encoding, cross-channel update metadata, and the expected
+deterministic tone bins. The retained evidence contains exactly those two raw
+packets, not an arbitrary TCP receive chunk. In the same boot, official host
+libiio independently interrogates the released ARM `iiod` control service.
+
+Before and after each block, ARM reads the live RX LO, sample rate, and RF
+bandwidth from the AD9361 IIO device. A mid-capture change discards the mixed
+block; a stable changed profile advances `config_epoch`, and both channel
+packets carry the same captured timestamp, epoch, center frequency, and sample
+rate. The spectrum TCP service has one active client and a two-second absolute
+send deadline, so a non-reading client cannot hold the data plane forever.
 
 That closes the block-capture/firmware/MMIO/FFT-DMA/packing/transport contact
-in simulation; it does not close the continuous AD9361-to-FFT stream contact,
-prove absence of gaps, or turn the 50 MHz attribute write into an RF
-measurement. The guest stops and restarts its IIO buffer for each block. The
+in simulation. The composed reference-PL layer closes the continuous
+sample-order/averaging/backpressure semantics at the same output contact; it
+does not turn the 50 MHz attribute write into an RF measurement or prove that
+the seller bitstream contains this pipeline. The guest stops and restarts its IIO buffer for each block. The
 fixed `/dev/mem` windows are safe in this QEMU launch because Linux is limited
 to 384 MiB of 512 MiB, but they are not a physical deployment design. Hardware
 needs device-tree reserved memory plus a kernel driver with DMA allocation and

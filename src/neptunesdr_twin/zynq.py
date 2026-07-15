@@ -9,7 +9,7 @@ import struct
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .ad9361 import AD9361
-from .clock import VirtualClock
+from .clock import ScheduledHandle, VirtualClock
 from .errors import InvalidTransition, OutOfRange
 from .trace import TraceLog
 
@@ -182,8 +182,16 @@ class ADIAxiCore(MMIODevice):
         self.write32(self.REG_ID, core_id)
 
 
+@dataclass(frozen=True)
+class _DMADescriptor:
+    transfer_id: int
+    flags: int
+    address: int
+    length: int
+
+
 class AXIDMAC(MMIODevice):
-    """Subset of the ADI AXI DMAC register ABI with timed completion."""
+    """P210 AXI-DMAC 4.00.a contact with deterministic timed completion."""
 
     REG_VERSION = 0x000
     REG_ID = 0x004
@@ -201,13 +209,33 @@ class AXIDMAC(MMIODevice):
     REG_DEST_STRIDE = 0x420
     REG_SRC_STRIDE = 0x424
     REG_TRANSFER_DONE = 0x428
+    REG_ACTIVE_TRANSFER_ID = 0x42C
+    REG_STATUS = 0x430
+    REG_CURRENT_DEST_ADDRESS = 0x434
+    REG_CURRENT_SRC_ADDRESS = 0x438
+
+    VERSION = 0x00040061
+    IRQ_TRANSFER_QUEUED = 1 << 0
     IRQ_TRANSFER_COMPLETED = 1 << 1
+    IRQ_MASK_ALL = IRQ_TRANSFER_QUEUED | IRQ_TRANSFER_COMPLETED
+    CONTROL_ENABLE = 1 << 0
+    CONTROL_PAUSE = 1 << 1
+    CONTROL_MASK = CONTROL_ENABLE | CONTROL_PAUSE
+    FLAG_CYCLIC = 1 << 0
+    FLAG_TLAST = 1 << 1
+    DMA_LENGTH_WIDTH = 24
+    X_LENGTH_MASK = 0x00FFFFFF
+    MEMORY_ADDRESS_WIDTH = 29
+    MEMORY_BEAT_BYTES = 8
+    ADDRESS_MASK = 0x1FFFFFF8
+    SUPPORTS_2D = False
+    QUEUE_DEPTH = 4
 
     def __init__(
         self,
         clock: VirtualClock,
         direction: str,
-        bytes_per_second: int = 245_760_000,
+        bytes_per_second: int = 491_520_000,
         on_transfer: Optional[Callable[[int, int, int], None]] = None,
     ) -> None:
         super().__init__(0x10000)
@@ -216,50 +244,279 @@ class AXIDMAC(MMIODevice):
         self.clock = clock
         self.direction = direction
         self.bytes_per_second = int(bytes_per_second)
+        if self.bytes_per_second <= 0:
+            raise ValueError("bytes_per_second must be positive")
         self.on_transfer = on_transfer
+        self.supports_cyclic = direction == "memory_to_device"
+        self._queue: List[_DMADescriptor] = []
+        self._timer: Optional[ScheduledHandle] = None
+        self._active_deadline_ns: Optional[int] = None
+        self._pause_remaining_ns = 0
         self.busy = False
         self.completed_transfer_id = -1
-        super().write32(self.REG_VERSION, 0x00010000)
-        super().write32(self.REG_ID, 0x444D4143)  # 'DMAC'
+        self.reset()
+
+    @property
+    def queued_transfers(self) -> int:
+        return len(self._queue)
+
+    def reset(self) -> None:
+        self._cancel_timer()
+        self._registers[:] = bytes(self.size)
+        self._queue = []
+        self._pause_remaining_ns = 0
+        self.busy = False
+        self.completed_transfer_id = -1
+        super().write32(self.REG_VERSION, self.VERSION)
+        super().write32(self.REG_ID, 0)
+        super().write32(self.REG_IRQ_MASK, self.IRQ_MASK_ALL)
+        super().write32(
+            self.REG_FLAGS,
+            self.FLAG_TLAST | (self.FLAG_CYCLIC if self.supports_cyclic else 0),
+        )
 
     def write32(self, offset: int, value: int) -> None:
+        value = int(value) & 0xFFFFFFFF
+
+        if offset == self.REG_IRQ_PENDING:
+            source = super().read32(self.REG_IRQ_SOURCE)
+            super().write32(
+                self.REG_IRQ_SOURCE, source & ~(value & self.IRQ_MASK_ALL)
+            )
+            self._update_irq_pending()
+            return
+        if offset in {
+            self.REG_VERSION,
+            self.REG_ID,
+            self.REG_IRQ_SOURCE,
+            self.REG_TRANSFER_ID,
+            self.REG_TRANSFER_DONE,
+            self.REG_ACTIVE_TRANSFER_ID,
+            self.REG_STATUS,
+            self.REG_CURRENT_DEST_ADDRESS,
+            self.REG_CURRENT_SRC_ADDRESS,
+        }:
+            return
+        if offset == self.REG_IRQ_MASK:
+            super().write32(offset, value & self.IRQ_MASK_ALL)
+            self._update_irq_pending()
+            return
+        if offset == self.REG_CONTROL:
+            self._write_control(value)
+            return
+        if offset == self.REG_START_TRANSFER:
+            if value & 1 and super().read32(offset) == 0:
+                if not super().read32(self.REG_CONTROL) & self.CONTROL_ENABLE:
+                    return
+                super().write32(offset, 1)
+                self._accept_descriptor()
+            return
+        if offset == self.REG_X_LENGTH:
+            super().write32(offset, value & self.X_LENGTH_MASK)
+            return
+        if offset in {
+            self.REG_Y_LENGTH,
+            self.REG_DEST_STRIDE,
+            self.REG_SRC_STRIDE,
+        }:
+            super().write32(offset, 0)
+            return
+        if offset == self.REG_DEST_ADDRESS:
+            super().write32(
+                offset,
+                value & self.ADDRESS_MASK
+                if self.direction == "device_to_memory"
+                else 0,
+            )
+            return
+        if offset == self.REG_SRC_ADDRESS:
+            super().write32(
+                offset,
+                value & self.ADDRESS_MASK
+                if self.direction == "memory_to_device"
+                else 0,
+            )
+            return
+        if offset == self.REG_FLAGS:
+            allowed = self.FLAG_TLAST
+            if self.supports_cyclic:
+                allowed |= self.FLAG_CYCLIC
+            super().write32(offset, value & allowed)
+            return
         super().write32(offset, value)
-        if offset == self.REG_START_TRANSFER and value & 1:
-            self._start()
-        elif offset == self.REG_IRQ_PENDING:
-            pending = super().read32(self.REG_IRQ_PENDING) & ~value
-            super().write32(self.REG_IRQ_PENDING, pending)
 
-    def _start(self) -> None:
-        if self.busy:
-            raise InvalidTransition("AXI DMAC transfer already active")
-        transfer_id = super().read32(self.REG_TRANSFER_ID) & 0x1F
-        x_length = super().read32(self.REG_X_LENGTH) + 1
-        y_length = super().read32(self.REG_Y_LENGTH) + 1
-        total = x_length * y_length
-        address = super().read32(
-            self.REG_DEST_ADDRESS if self.direction == "device_to_memory" else self.REG_SRC_ADDRESS
-        )
-        self.busy = True
-        delay_ns = max(1, (total * 1_000_000_000 + self.bytes_per_second - 1) // self.bytes_per_second)
+    def _write_control(self, value: int) -> None:
+        old = super().read32(self.REG_CONTROL)
+        control = value & self.CONTROL_MASK
+        was_paused = bool(old & self.CONTROL_PAUSE)
+        paused = bool(control & self.CONTROL_PAUSE)
+        super().write32(self.REG_CONTROL, control)
 
-        def complete() -> None:
-            if self.on_transfer is not None:
-                self.on_transfer(address, total, transfer_id)
+        if not control & self.CONTROL_ENABLE:
+            self._cancel_timer()
+            self._queue = []
+            self._pause_remaining_ns = 0
             self.busy = False
-            self.completed_transfer_id = transfer_id
-            super(AXIDMAC, self).write32(self.REG_TRANSFER_DONE, 1 << transfer_id)
-            pending = super(AXIDMAC, self).read32(self.REG_IRQ_PENDING)
-            super(AXIDMAC, self).write32(
-                self.REG_IRQ_PENDING, pending | self.IRQ_TRANSFER_COMPLETED
+            self.completed_transfer_id = -1
+            for register in (
+                self.REG_TRANSFER_ID,
+                self.REG_START_TRANSFER,
+                self.REG_TRANSFER_DONE,
+                self.REG_ACTIVE_TRANSFER_ID,
+                self.REG_STATUS,
+            ):
+                super().write32(register, 0)
+            return
+
+        if not was_paused and paused and self.busy:
+            deadline = self._active_deadline_ns
+            self._pause_remaining_ns = max(
+                1, (deadline - self.clock.now_ns) if deadline is not None else 1
             )
-            super(AXIDMAC, self).write32(
-                self.REG_IRQ_SOURCE,
-                (pending | self.IRQ_TRANSFER_COMPLETED)
-                & ~super(AXIDMAC, self).read32(self.REG_IRQ_MASK),
+            self._cancel_timer()
+        elif was_paused and not paused and self.busy:
+            delay_ns = self._pause_remaining_ns or self._descriptor_delay(
+                self._queue[0]
+            )
+            self._pause_remaining_ns = 0
+            self._arm_timer(delay_ns)
+
+    def _update_irq_pending(self) -> None:
+        source = super().read32(self.REG_IRQ_SOURCE) & self.IRQ_MASK_ALL
+        mask = super().read32(self.REG_IRQ_MASK) & self.IRQ_MASK_ALL
+        super().write32(self.REG_IRQ_PENDING, source & ~mask)
+
+    def _raise_irq_source(self, bits: int) -> None:
+        source = super().read32(self.REG_IRQ_SOURCE)
+        super().write32(self.REG_IRQ_SOURCE, source | (bits & self.IRQ_MASK_ALL))
+        self._update_irq_pending()
+
+    def _accept_descriptor(self) -> bool:
+        if len(self._queue) == self.QUEUE_DEPTH:
+            return False
+
+        transfer_id = super().read32(self.REG_TRANSFER_ID) & (
+            self.QUEUE_DEPTH - 1
+        )
+        flags = super().read32(self.REG_FLAGS)
+        descriptor = _DMADescriptor(
+            transfer_id=transfer_id,
+            flags=flags,
+            address=super().read32(
+                self.REG_DEST_ADDRESS
+                if self.direction == "device_to_memory"
+                else self.REG_SRC_ADDRESS
+            ),
+            length=super().read32(self.REG_X_LENGTH) + 1,
+        )
+        self._queue.append(descriptor)
+        super().write32(self.REG_START_TRANSFER, 0)
+
+        if not descriptor.flags & self.FLAG_CYCLIC:
+            done = super().read32(self.REG_TRANSFER_DONE)
+            super().write32(
+                self.REG_TRANSFER_DONE, done & ~(1 << transfer_id)
+            )
+            super().write32(
+                self.REG_TRANSFER_ID,
+                (transfer_id + 1) & (self.QUEUE_DEPTH - 1),
+            )
+            self._raise_irq_source(self.IRQ_TRANSFER_QUEUED)
+        self._schedule_head()
+        return True
+
+    def _schedule_head(self) -> None:
+        if self.busy or not self._queue:
+            return
+        descriptor = self._queue[0]
+        self.busy = True
+        super().write32(self.REG_ACTIVE_TRANSFER_ID, descriptor.transfer_id)
+        delay_ns = self._descriptor_delay(descriptor)
+        if super().read32(self.REG_CONTROL) & self.CONTROL_PAUSE:
+            self._pause_remaining_ns = delay_ns
+        else:
+            self._arm_timer(delay_ns)
+
+    def _descriptor_delay(self, descriptor: _DMADescriptor) -> int:
+        return max(
+            1,
+            (
+                descriptor.length * 1_000_000_000
+                + self.bytes_per_second
+                - 1
+            )
+            // self.bytes_per_second,
+        )
+
+    def _arm_timer(self, delay_ns: int) -> None:
+        self._active_deadline_ns = self.clock.now_ns + delay_ns
+        self._timer = self.clock.schedule(
+            delay_ns,
+            self._complete_head,
+            "axi-dmac-%s" % self.direction,
+        )
+
+    def _cancel_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = None
+        self._active_deadline_ns = None
+
+    def _complete_head(self) -> None:
+        self._timer = None
+        self._active_deadline_ns = None
+        if not self.busy or not self._queue:
+            return
+
+        descriptor = self._queue[0]
+        current_address_register = (
+            self.REG_CURRENT_DEST_ADDRESS
+            if self.direction == "device_to_memory"
+            else self.REG_CURRENT_SRC_ADDRESS
+        )
+        super().write32(
+            current_address_register, descriptor.address + descriptor.length
+        )
+
+        if descriptor.flags & self.FLAG_CYCLIC:
+            if self.on_transfer is not None:
+                self.on_transfer(
+                    descriptor.address,
+                    descriptor.length,
+                    descriptor.transfer_id,
+                )
+            if self.busy and self._queue and self._queue[0] == descriptor:
+                if super().read32(self.REG_CONTROL) & self.CONTROL_PAUSE:
+                    self._pause_remaining_ns = self._descriptor_delay(descriptor)
+                else:
+                    self._arm_timer(self._descriptor_delay(descriptor))
+            return
+
+        done = super().read32(self.REG_TRANSFER_DONE)
+        super().write32(
+            self.REG_TRANSFER_DONE, done | (1 << descriptor.transfer_id)
+        )
+        self.completed_transfer_id = descriptor.transfer_id
+        self._raise_irq_source(self.IRQ_TRANSFER_COMPLETED)
+        self._queue.pop(0)
+        self.busy = False
+        if self._queue:
+            self._schedule_head()
+        else:
+            super().write32(
+                self.REG_ACTIVE_TRANSFER_ID,
+                super().read32(self.REG_TRANSFER_ID),
             )
 
-        self.clock.schedule(delay_ns, complete, "axi-dmac-%s" % self.direction)
+        if super().read32(self.REG_START_TRANSFER) & 1:
+            self._accept_descriptor()
+
+        if self.on_transfer is not None:
+            self.on_transfer(
+                descriptor.address,
+                descriptor.length,
+                descriptor.transfer_id,
+            )
 
 
 @dataclass(frozen=True)
@@ -352,6 +609,7 @@ class Zynq7020:
         self.boot_source: Optional[BootSource] = None
         self.boot_stage = BootStage.OFF
         self.boot_failure: Optional[str] = None
+        self._boot_callbacks: List[ScheduledHandle] = []
 
     def _install_map(self) -> None:
         regions = [
@@ -388,6 +646,7 @@ class Zynq7020:
     def power_on(self, source: BootSource = BootSource.QSPI, kernel_available: bool = True) -> None:
         if self.boot_stage != BootStage.OFF:
             raise InvalidTransition("Zynq is already powered")
+        self._cancel_boot_callbacks()
         self.boot_source = BootSource(source)
         self.boot_stage = BootStage.BOOT_ROM
         self.boot_failure = None
@@ -415,15 +674,26 @@ class Zynq7020:
                 self.boot_stage = BootStage.RUNNING
                 self._boot_event("running")
 
-        self.clock.schedule(1_000_000, enter_fsbl, "zynq-fsbl")
-        self.clock.schedule(6_000_000, enter_uboot, "zynq-uboot")
-        self.clock.schedule(16_000_000, enter_kernel, "zynq-kernel")
-        self.clock.schedule(116_000_000, enter_running, "zynq-userspace")
+        self._boot_callbacks = [
+            self.clock.schedule(1_000_000, enter_fsbl, "zynq-fsbl"),
+            self.clock.schedule(6_000_000, enter_uboot, "zynq-uboot"),
+            self.clock.schedule(16_000_000, enter_kernel, "zynq-kernel"),
+            self.clock.schedule(116_000_000, enter_running, "zynq-userspace"),
+        ]
 
     def power_off(self) -> None:
+        self._cancel_boot_callbacks()
+        self.rx_dma.reset()
+        self.tx_dma.reset()
         self.boot_stage = BootStage.OFF
         self.boot_source = None
+        self.boot_failure = None
         self._boot_event("power_off")
+
+    def _cancel_boot_callbacks(self) -> None:
+        for callback in self._boot_callbacks:
+            callback.cancel()
+        self._boot_callbacks = []
 
     def snapshot(self) -> Dict[str, object]:
         return {

@@ -11,13 +11,15 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "scripts" / "build_p210_qemu.sh"
 RUN = ROOT / "scripts" / "run_p210_firmware.sh"
+APPLIANCE = ROOT / "scripts" / "run_virtual_appliance.sh"
+ACCEPT = ROOT / "scripts" / "accept_virtual_twin.sh"
 PATCH = ROOT / "qemu" / "patches" / "0001-p210-zynq-devices.patch"
 PREPARE = ROOT / "scripts" / "prepare_runtime.py"
 
 
 class P210RuntimeScriptTests(unittest.TestCase):
     def test_wrappers_are_executable_and_shell_syntax_is_valid(self) -> None:
-        for script in (BUILD, RUN):
+        for script in (BUILD, RUN, APPLIANCE, ACCEPT):
             self.assertTrue(script.stat().st_mode & stat.S_IXUSR, script)
             subprocess.run(["sh", "-n", str(script)], check=True)
 
@@ -71,6 +73,9 @@ class P210RuntimeScriptTests(unittest.TestCase):
             "mem=384M",
             "hostfwd=tcp:127.0.0.1:${IIO_PORT}-10.0.2.15:30431",
             "hostfwd=tcp:127.0.0.1:${FFT_PORT}-10.0.2.15:30432",
+            'socket,id=uart1,host=127.0.0.1,port=${UART_PORT}',
+            "-serial chardev:uart1",
+            'set -- "$@" -gdb "tcp:127.0.0.1:$GDB_PORT"',
             'trap cleanup 0',
             'MODE=selftest',
             '"$ROOT/scripts/build_host_libiio.sh"',
@@ -107,6 +112,9 @@ class P210RuntimeScriptTests(unittest.TestCase):
         self.assertIn("Per-phase VM readiness/capture timeout", result.stdout)
         self.assertIn("downloads/builds", result.stdout)
         self.assertIn("--iio-report", result.stdout)
+        self.assertIn("--uart-port", result.stdout)
+        self.assertIn("--gdb", result.stdout)
+        self.assertIn("UART1 console", result.stdout)
 
     def test_runtime_manifest_distinguishes_custom_machine_from_stock_qemu(self) -> None:
         source = PREPARE.read_text()
@@ -117,6 +125,43 @@ class P210RuntimeScriptTests(unittest.TestCase):
             '"four-entry AXI-DMAC"',
             '"USB gadget controller"',
             "CPU copy, PL-FFT DMA",
+        ):
+            self.assertIn(token, source)
+
+    def test_complete_appliance_owns_firmware_and_usbip_lifecycles(self) -> None:
+        source = APPLIANCE.read_text()
+        for token in (
+            '"$ROOT/scripts/run_p210_firmware.sh" --serve',
+            "P210_RUNTIME READY",
+            "python3 -m neptunesdr_twin usbip-serve",
+            '--iiod-backend "127.0.0.1:$IIO_PORT"',
+            "NEPTUNE_APPLIANCE READY",
+            "trap cleanup 0",
+            "busid=1-1",
+            'uart=tcp:127.0.0.1:%s',
+            '--uart-port "$UART_PORT"',
+            '--gdb "$GDB_PORT"',
+        ):
+            self.assertIn(token, source)
+        result = subprocess.run(
+            [str(APPLIANCE), "--no-build", "--dry-run"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        self.assertIn("backend=127.0.0.1:30431", result.stdout)
+
+    def test_acceptance_wrapper_includes_every_evidence_layer(self) -> None:
+        source = ACCEPT.read_text()
+        for token in (
+            'unittest discover -s "$ROOT/tests"',
+            'unittest discover -s "$ROOT/cosim/tests"',
+            '"$ROOT/scripts/test_firmware.py" --fetch --json',
+            "p210-system-xsa",
+            "neptunesdr_twin appliance --dry-run",
+            '"$ROOT/scripts/run_p210_firmware.sh"',
+            "P210_RUNTIME PASS",
+            "NEPTUNE_TWIN_ACCEPTANCE PASS",
         ):
             self.assertIn(token, source)
 

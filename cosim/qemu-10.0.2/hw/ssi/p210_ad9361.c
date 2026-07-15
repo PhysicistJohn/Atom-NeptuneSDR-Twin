@@ -45,6 +45,7 @@
 #define AD9361_VCO_LOCK                  BIT(1)
 #define AD9361_RX_BB_TUNE_CAL            BIT(7)
 #define AD9361_P210_REFCLK_HZ            40000000ULL
+#define AD9361_BBPLL_MODULUS             2088960ULL
 
 #define AD9361_ENSM_ALERT                0x05
 #define AD9361_ENSM_TX                   0x06
@@ -133,7 +134,8 @@ static void p210_ad9361_complete_rx_bbf_cal(P210AD9361State *s)
                      s->regs[AD9361_REG_FRACT_BB_FREQ_3];
     uint64_t bbpll_hz = AD9361_P210_REFCLK_HZ *
                         s->regs[AD9361_REG_INTEGER_BB_FREQ] +
-                        (AD9361_P210_REFCLK_HZ * fract >> 24);
+                        AD9361_P210_REFCLK_HZ * fract /
+                        AD9361_BBPLL_MODULUS;
     uint32_t divide = s->regs[AD9361_REG_RX_BBF_TUNE_DIVIDE] |
                       ((s->regs[AD9361_REG_RX_BBF_TUNE_CONFIG] & 1) << 8);
     uint64_t bw_hz;

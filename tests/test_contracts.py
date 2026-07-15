@@ -74,6 +74,40 @@ class ValueDomainTests(unittest.TestCase):
         self.assertFalse(relation.proven)
         self.assertIn("not proven", relation.reason)
 
+    def test_nonfinite_inner_domain_does_not_refine_finite_domain(self):
+        inner = ValueDomain(
+            ValueType.FLOAT,
+            minimum=0.0,
+            maximum=1.0,
+            finite=False,
+        )
+        outer = ValueDomain(
+            ValueType.FLOAT,
+            minimum=0.0,
+            maximum=1.0,
+            finite=True,
+        )
+        self.assertTrue(inner.contains(float("nan")))
+        relation = inner.subset_of(outer)
+        self.assertFalse(relation.proven)
+        self.assertNotEqual(relation.witness, relation.witness)  # NaN witness.
+        self.assertTrue(outer.subset_of(inner).proven)
+
+    def test_explicit_finite_values_refine_even_if_domain_flag_is_relaxed(self):
+        enumerated = ValueDomain(
+            ValueType.FLOAT,
+            allowed=(0.0, 1.0),
+            finite=False,
+        )
+        finite = ValueDomain(ValueType.FLOAT, finite=True)
+        self.assertTrue(enumerated.subset_of(finite).proven)
+
+    def test_nonfinite_or_non_numeric_bounds_are_rejected(self):
+        for bound in (float("nan"), float("inf"), True, "0"):
+            with self.subTest(bound=bound):
+                with self.assertRaises(ValueError):
+                    ValueDomain(ValueType.FLOAT, minimum=bound)
+
 
 class CompositionTests(unittest.TestCase):
     def make_components(self):
