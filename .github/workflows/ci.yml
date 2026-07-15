@@ -1,0 +1,35 @@
+name: conformance
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the twin
+        run: python -m pip install .
+      - name: Run the complete deterministic suite
+        run: python -m unittest discover -s tests -v
+      - name: Check Python and shell entry points
+        run: |
+          python -m compileall -q src tests scripts
+          bash -n scripts/capture_unit.sh
+          bash -n scripts/linux_usb_gadget.sh
+      - name: Exercise safe dry runs
+        run: |
+          neptune-twin contracts
+          neptune-twin fft-plan
+          neptune-twin serve --dry-run
+          ./scripts/linux_usb_gadget.sh >/dev/null

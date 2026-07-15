@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "classification": "derived runtime evidence; no artifact in this file is vendor P210 firmware",
+  "inputs": {
+    "p210-sd-boot": {
+      "firmware_lock_sha256": "9e548d41388df773baa42be70d6c0c56eebb41e7e4c6225db641a0ddc3aba52b",
+      "kernel_name": "Linux-4.14.0",
+      "kernel_payload_sha256": "1022baf71e06f252330734e521efd240264ff018116086a87f3e9d5394a51219",
+      "kernel_uncompressed_sha256": "e75f3f2f58da18f123bea09843323a9316ef19a6e9a1475740c256b04a8fbc78",
+      "kernel_config_sha256": "1337885303ac34439828f6710514ee759ac4060245a8ca9ec78bab1de2ed9cd4",
+      "devicetree_sha256": "ee2a4b402760cdc777c4c8072385f00372b27dddf5ec4826178b261bfc26e719"
+    },
+    "plutosdr-fw-v0.39": {
+      "firmware_lock_sha256": "6542a4a9aafe7d51239dc896b93e1c56c301fab526e8a78472f7f13b6f27dfec",
+      "configuration": "config@0",
+      "rootfs_sha256": "95eb57d76db1cd06e7ae81d8fa1c6e3567b8c792b6d0eaa4db6e8bb8a921ba77",
+      "rootfs_uncompressed_bytes": 45542912,
+      "iiod_sha256": "f78deec60d1c3281732b55935cf95c81aefc7f9dbced838ebbd8438372b1592a",
+      "libiio_sha256": "9b9f891744f590a09582a8e976328bf9fde2999cf74dedf405863615fca977b9",
+      "libc_linux_abi_floor": "3.2.0",
+      "arm_abi": "EABI5-hard-float"
+    }
+  },
+  "upstream_runtime_source": {
+    "libiio_tag": "v0.26",
+    "libiio_commit": "a0eca0d2bf10326506fb762f0eec14255b27bef5",
+    "iiod_source": "https://github.com/analogdevicesinc/libiio/blob/a0eca0d2bf10326506fb762f0eec14255b27bef5/iiod/iiod.c",
+    "default_tcp_port": 30431,
+    "released_service": "/usr/sbin/iiod -D -n 3 -F /dev/iio_ffs",
+    "released_service_contacts": [
+      "USB FunctionFS IIO",
+      "TCP IIOD on port 30431"
+    ]
+  },
+  "runtime_contact_findings": {
+    "public_p210_usb": {
+      "controller": "/amba/usb@e0002000",
+      "status": "okay",
+      "dr_mode": "host",
+      "rootfs_expectation": "USB gadget UDC ci_hdrc.0 with FunctionFS/RNDIS/MSD/ACM",
+      "result": "incompatible until a correct vendor DT or evidence-backed DT change is supplied"
+    },
+    "stock_qemu_ethernet": {
+      "public_p210_phy_address": 0,
+      "qemu_xilinx_zynq_a9_phy_address": 7,
+      "result": "test-only DT adaptation is required for stock-QEMU Ethernet"
+    }
+  },
+  "community_p210_recipe": {
+    "repository": "https://github.com/wucke13/Neptune-SDR-nix-utils",
+    "commit": "ba4a958333a3dfec5e5102e30fe017508e1fd6f6",
+    "composition": "P210 XSA/FSBL/U-Boot plus official Pluto v0.39 Linux/rootfs",
+    "known_status_at_commit": "FSBL boots U-Boot and Linux; AD9361 is non-functional"
+  }
+}

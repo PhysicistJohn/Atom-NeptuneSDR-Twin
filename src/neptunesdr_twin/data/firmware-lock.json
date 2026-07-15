@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "artifacts": {
+    "p210-sd-boot": {
+      "url": "https://raw.githubusercontent.com/wucke13/Neptune-SDR-nix-utils/ba4a958333a3dfec5e5102e30fe017508e1fd6f6/assets/NeptuneSDR-P210-sdcard-boot-partition.tar.zst",
+      "sha256": "9e548d41388df773baa42be70d6c0c56eebb41e7e4c6225db641a0ddc3aba52b",
+      "bytes": 11571200,
+      "kind": "p210-sd-boot-tar",
+      "evidence": "E3-public-board-artifact"
+    },
+    "p210-system-xsa": {
+      "url": "https://raw.githubusercontent.com/wucke13/Neptune-SDR-nix-utils/ba4a958333a3dfec5e5102e30fe017508e1fd6f6/pkgs/neptunesdr-xsa-bin/system_top.xsa",
+      "sha256": "caecfeb3ce96f3c6951311ed985af4f144b5a8e54a3cbc25f0527b02c4ff1066",
+      "bytes": 840505,
+      "kind": "p210-xilinx-hardware-handoff",
+      "evidence": "E3-public-board-artifact"
+    },
+    "plutosdr-fw-v0.39": {
+      "url": "https://github.com/analogdevicesinc/plutosdr-fw/releases/download/v0.39/plutosdr-fw-v0.39.zip",
+      "sha256": "6542a4a9aafe7d51239dc896b93e1c56c301fab526e8a78472f7f13b6f27dfec",
+      "bytes": 23719086,
+      "kind": "official-pluto-release-zip",
+      "evidence": "E3-upstream-release"
+    }
+  }
+}

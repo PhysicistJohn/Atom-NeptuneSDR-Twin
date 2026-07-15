@@ -1,0 +1,467 @@
+{
+  "schema_version": 1,
+  "name": "p210-digital-twin",
+  "device": "HAMGEEK P210 / NeptuneSDR, Zynq-7020 + AD9361",
+  "description": "Decomposed target contracts. Values marked E4 or E5 are acceptance targets that must be replaced or confirmed from the purchased board's fingerprint and measurements before exactness is claimed.",
+  "exactness_policy": {
+    "deterministic_contacts": "byte-exact normalized traces",
+    "timed_contacts": "trace equivalence within the guarantee tolerance",
+    "rf_contacts": "metric or distribution equivalence within calibrated confidence bounds",
+    "minimum_claim_level": "E4_DIFFERENTIAL"
+  },
+  "components": [
+    {
+      "id": "board_clock_power",
+      "version": "1",
+      "description": "USB input power, regulated rails, and the physical AD9361 reference oscillator.",
+      "ports": [
+        {
+          "name": "usb_power",
+          "kind": "power",
+          "direction": "input",
+          "protocol": "usb-vbus",
+          "external": true,
+          "domain": {"value_type": "number", "unit": "V", "minimum": 4.75, "maximum": 5.25}
+        },
+        {
+          "name": "ad9361_ref_clock",
+          "kind": "clock",
+          "direction": "output",
+          "protocol": "cmos-clock",
+          "clock_domain": "ad9361_ref",
+          "domain": {"value_type": "number", "unit": "Hz", "minimum": 39999980, "maximum": 40000020}
+        }
+      ],
+      "assumptions": [
+        {
+          "id": "usb_supply_voltage",
+          "key": "power.input.voltage_v",
+          "external": true,
+          "description": "The host or powered hub supplies valid VBUS.",
+          "domain": {"value_type": "number", "unit": "V", "minimum": 4.75, "maximum": 5.25}
+        },
+        {
+          "id": "ambient_temperature",
+          "key": "environment.temperature_c",
+          "external": true,
+          "domain": {"value_type": "number", "unit": "degC", "minimum": -10, "maximum": 60}
+        }
+      ],
+      "guarantees": [
+        {
+          "id": "rails_stable",
+          "key": "power.rails.stable",
+          "description": "All modeled rails are in regulation after power-on settling.",
+          "domain": {"value_type": "bool", "allowed": [true]},
+          "required_evidence": "E4_DIFFERENTIAL"
+        },
+        {
+          "id": "ad9361_reference_frequency",
+          "key": "clock.ad9361.frequency_hz",
+          "description": "Target oscillator range; confirm on this board revision.",
+          "domain": {"value_type": "number", "unit": "Hz", "minimum": 39999980, "maximum": 40000020},
+          "required_evidence": "E5_CALIBRATED"
+        }
+      ]
+    },
+    {
+      "id": "rf_frontend",
+      "version": "1",
+      "description": "SMA contacts, matching network, routing, and board-level RF impairments.",
+      "ports": [
+        {
+          "name": "antenna_rx",
+          "kind": "rf",
+          "direction": "input",
+          "protocol": "50-ohm-rf",
+          "external": true,
+          "domain": {"value_type": "complex", "unit": "V"}
+        },
+        {
+          "name": "antenna_tx",
+          "kind": "rf",
+          "direction": "output",
+          "protocol": "50-ohm-rf",
+          "external": true,
+          "domain": {"value_type": "complex", "unit": "V"}
+        },
+        {
+          "name": "rx_to_chip",
+          "kind": "rf",
+          "direction": "output",
+          "protocol": "ad9361-rf-analog",
+          "domain": {"value_type": "complex", "unit": "V"}
+        },
+        {
+          "name": "tx_from_chip",
+          "kind": "rf",
+          "direction": "input",
+          "protocol": "ad9361-rf-analog",
+          "domain": {"value_type": "complex", "unit": "V"}
+        }
+      ],
+      "assumptions": [
+        {
+          "id": "regulated_power",
+          "key": "power.rails.stable",
+          "domain": {"value_type": "bool", "allowed": [true]}
+        },
+        {
+          "id": "connector_impedance",
+          "key": "rf.connector.impedance_ohm",
+          "external": true,
+          "domain": {"value_type": "number", "unit": "ohm", "minimum": 49, "maximum": 51}
+        },
+        {
+          "id": "safe_rx_power",
+          "key": "rf.rx.input_power_dbm",
+          "external": true,
+          "domain": {"value_type": "number", "unit": "dBm", "minimum": -120, "maximum": -10}
+        }
+      ],
+      "guarantees": [
+        {
+          "id": "path_available",
+          "key": "rf.frontend.path.available",
+          "domain": {"value_type": "bool", "allowed": [true]},
+          "required_evidence": "E4_DIFFERENTIAL"
+        },
+        {
+          "id": "nominal_frequency_coverage",
+          "key": "rf.frontend.frequency_hz",
+          "description": "Advertised target only; the board-specific usable envelope requires RF calibration.",
+          "domain": {"value_type": "number", "unit": "Hz", "minimum": 70000000, "maximum": 6000000000},
+          "required_evidence": "E5_CALIBRATED"
+        },
+        {
+          "id": "impairments_calibrated",
+          "key": "rf.frontend.impairment_profile",
+          "domain": {"value_type": "string", "pattern": "sha256:[0-9a-f]{64}"},
+          "required_evidence": "E5_CALIBRATED"
+        }
+      ]
+    },
+    {
+      "id": "ad9361",
+      "version": "1",
+      "description": "AD9361 register, ENSM, calibration, RF, and DDR baseband behavior.",
+      "modes": ["reset", "alert", "rx", "tx", "fdd", "calibrating"],
+      "initial_mode": "reset",
+      "transitions": [
+        {"source": "reset", "target": "alert", "trigger": "initialize"},
+        {"source": "alert", "target": "calibrating", "trigger": "calibrate"},
+        {"source": "calibrating", "target": "alert", "trigger": "calibration_done"},
+        {"source": "alert", "target": "rx", "trigger": "enable_rx"},
+        {"source": "alert", "target": "tx", "trigger": "enable_tx"},
+        {"source": "alert", "target": "fdd", "trigger": "enable_fdd"},
+        {"source": "rx", "target": "alert", "trigger": "disable"},
+        {"source": "tx", "target": "alert", "trigger": "disable"},
+        {"source": "fdd", "target": "alert", "trigger": "disable"}
+      ],
+      "ports": [
+        {
+          "name": "ref_clock",
+          "kind": "clock",
+          "direction": "input",
+          "protocol": "cmos-clock",
+          "clock_domain": "ad9361_ref",
+          "domain": {"value_type": "number", "unit": "Hz", "minimum": 39999980, "maximum": 40000020}
+        },
+        {
+          "name": "rf_rx",
+          "kind": "rf",
+          "direction": "input",
+          "protocol": "ad9361-rf-analog",
+          "domain": {"value_type": "complex", "unit": "V"}
+        },
+        {
+          "name": "rf_tx",
+          "kind": "rf",
+          "direction": "output",
+          "protocol": "ad9361-rf-analog",
+          "domain": {"value_type": "complex", "unit": "V"}
+        },
+        {
+          "name": "rx_iq",
+          "kind": "iq",
+          "direction": "output",
+          "protocol": "ad9361-ddr-iq",
+          "clock_domain": "ad9361_data_clk",
+          "domain": {"value_type": "sequence", "width_bits": 12, "signed": true, "byte_order": "native"},
+          "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}
+        },
+        {
+          "name": "tx_iq",
+          "kind": "iq",
+          "direction": "input",
+          "protocol": "ad9361-ddr-iq",
+          "clock_domain": "ad9361_data_clk",
+          "domain": {"value_type": "sequence", "width_bits": 12, "signed": true, "byte_order": "native"},
+          "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}
+        },
+        {
+          "name": "spi_control",
+          "kind": "spi",
+          "direction": "inout",
+          "protocol": "ad9361-spi-mode0",
+          "clock_domain": "spi_clk",
+          "domain": {"value_type": "mapping"}
+        },
+        {
+          "name": "ensm_gpio",
+          "kind": "gpio",
+          "direction": "input",
+          "protocol": "ad9361-ensm",
+          "clock_domain": "ps_gpio",
+          "domain": {"value_type": "mapping"}
+        }
+      ],
+      "assumptions": [
+        {"id": "regulated_power", "key": "power.rails.stable", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "reference_clock", "key": "clock.ad9361.frequency_hz", "domain": {"value_type": "number", "unit": "Hz", "minimum": 39999980, "maximum": 40000020}},
+        {"id": "rf_path", "key": "rf.frontend.path.available", "domain": {"value_type": "bool", "allowed": [true]}}
+      ],
+      "guarantees": [
+        {"id": "rx_word_width", "key": "iq.rx.word_bits", "domain": {"value_type": "int", "allowed": [12]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "tx_word_width", "key": "iq.tx.word_bits", "domain": {"value_type": "int", "allowed": [12]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "lane_order", "key": "iq.lane_order", "domain": {"value_type": "string", "allowed": ["I,Q"]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "sample_rate_envelope", "key": "iq.sample_rate_hz", "domain": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "analog_bandwidth_envelope", "key": "rf.analog_bandwidth_hz", "description": "The advertised AD9361 analog filter range; 50 MHz is an explicit acceptance point at 61.44 MSPS.", "domain": {"value_type": "number", "unit": "Hz", "minimum": 200000, "maximum": 56000000}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "wideband_50mhz_acceptance", "key": "rf.profile.50mhz.accepted", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "spi_mode", "key": "ad9361.spi.mode", "domain": {"value_type": "int", "allowed": [0]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "control_ready", "key": "ad9361.control.ready", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "tuning_envelope", "key": "rf.tuning.accepted_hz", "domain": {"value_type": "number", "unit": "Hz", "minimum": 70000000, "maximum": 6000000000}, "required_evidence": "E4_DIFFERENTIAL"}
+      ]
+    },
+    {
+      "id": "fpga_pl",
+      "version": "1",
+      "description": "ADI-compatible IQ capture/playback, AXI register surface, and DMA behavior in Zynq PL.",
+      "modes": ["reset", "idle", "streaming", "overflow"],
+      "initial_mode": "reset",
+      "transitions": [
+        {"source": "reset", "target": "idle", "trigger": "release_reset"},
+        {"source": "idle", "target": "streaming", "trigger": "start_dma"},
+        {"source": "streaming", "target": "idle", "trigger": "stop_dma"},
+        {"source": "streaming", "target": "overflow", "trigger": "fifo_overflow"},
+        {"source": "overflow", "target": "idle", "trigger": "clear_overflow"}
+      ],
+      "ports": [
+        {
+          "name": "rx_iq",
+          "kind": "iq",
+          "direction": "input",
+          "protocol": "ad9361-ddr-iq",
+          "clock_domain": "ad9361_data_clk",
+          "domain": {"value_type": "sequence", "width_bits": 12, "signed": true, "byte_order": "native"},
+          "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}
+        },
+        {
+          "name": "tx_iq",
+          "kind": "iq",
+          "direction": "output",
+          "protocol": "ad9361-ddr-iq",
+          "clock_domain": "ad9361_data_clk",
+          "domain": {"value_type": "sequence", "width_bits": 12, "signed": true, "byte_order": "native"},
+          "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}
+        },
+        {
+          "name": "ps_control",
+          "kind": "axi4-lite",
+          "direction": "input",
+          "protocol": "p210-register-abi-v1",
+          "clock_domain": "fclk0",
+          "domain": {"value_type": "mapping"}
+        },
+        {
+          "name": "dma_rx",
+          "kind": "dma",
+          "direction": "output",
+          "protocol": "p210-iq-s16le",
+          "clock_domain": "fclk0",
+          "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"},
+          "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}
+        },
+        {
+          "name": "dma_tx",
+          "kind": "dma",
+          "direction": "input",
+          "protocol": "p210-iq-s16le",
+          "clock_domain": "fclk0",
+          "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"},
+          "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}
+        }
+      ],
+      "assumptions": [
+        {"id": "rx_width", "key": "iq.rx.word_bits", "domain": {"value_type": "int", "allowed": [12]}},
+        {"id": "tx_width", "key": "iq.tx.word_bits", "domain": {"value_type": "int", "allowed": [12]}},
+        {"id": "iq_order", "key": "iq.lane_order", "domain": {"value_type": "string", "allowed": ["I,Q"]}},
+        {"id": "iq_rate", "key": "iq.sample_rate_hz", "domain": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}},
+        {"id": "transceiver_ready", "key": "ad9361.control.ready", "domain": {"value_type": "bool", "allowed": [true]}}
+      ],
+      "guarantees": [
+        {"id": "register_abi", "key": "fpga.register_abi", "description": "Fingerprint must be replaced with the probed HDL/register-map identifier.", "domain": {"value_type": "string", "allowed": ["p210-adi-axi-v1"]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "iq_order_preserved", "key": "fpga.iq.order_preserved", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "overflow_is_signaled", "key": "fpga.overflow.signaled", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "dma_sample_rate", "key": "dma.sample_rate_hz", "domain": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}, "required_evidence": "E3_INTEGRATION"}
+      ]
+    },
+    {
+      "id": "pl_fft_pipeline",
+      "version": "1",
+      "description": "Optional PL refinement that consumes the two 16-bit-container IQ streams, performs block FFT/power averaging, and emits versioned CRC-protected spectrum packets instead of continuous raw IQ.",
+      "modes": ["reset", "idle", "accumulating", "emitting", "backpressured", "overflow"],
+      "initial_mode": "reset",
+      "transitions": [
+        {"source": "reset", "target": "idle", "trigger": "release_reset"},
+        {"source": "idle", "target": "accumulating", "trigger": "start"},
+        {"source": "accumulating", "target": "emitting", "trigger": "average_complete"},
+        {"source": "emitting", "target": "accumulating", "trigger": "sink_ready"},
+        {"source": "emitting", "target": "backpressured", "trigger": "sink_blocked"},
+        {"source": "backpressured", "target": "accumulating", "trigger": "sink_ready"},
+        {"source": "accumulating", "target": "overflow", "trigger": "input_overrun"},
+        {"source": "overflow", "target": "accumulating", "trigger": "reported"}
+      ],
+      "ports": [
+        {"name": "iq_in", "kind": "dma", "direction": "input", "protocol": "p210-iq-s16le", "clock_domain": "fclk0", "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}, "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}},
+        {"name": "ps_control", "kind": "axi4-lite", "direction": "input", "protocol": "p210-register-abi-v1", "clock_domain": "fclk0", "domain": {"value_type": "mapping"}},
+        {"name": "spectrum_out", "kind": "dma", "direction": "output", "protocol": "nsft-v1", "clock_domain": "fclk0", "domain": {"value_type": "bytes", "min_length": 74, "max_length": 262216}}
+      ],
+      "assumptions": [
+        {"id": "iq_rate", "key": "dma.sample_rate_hz", "domain": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}},
+        {"id": "input_overflow_visible", "key": "fpga.overflow.signaled", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "wideband_input", "key": "rf.profile.50mhz.accepted", "domain": {"value_type": "bool", "allowed": [true]}}
+      ],
+      "guarantees": [
+        {"id": "input_capacity", "key": "fft.input.aggregate_complex_samples_per_second", "domain": {"value_type": "int", "minimum": 122880000, "maximum": 200000000}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "supported_size", "key": "fft.size", "domain": {"value_type": "int", "allowed": [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "spectrum_available", "key": "fft.output.available", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "spectrum_protocol", "key": "fft.output.protocol", "domain": {"value_type": "string", "allowed": ["NSFT-v1-u16-log", "NSFT-v1-float32-dbfs"]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "bounded_output_rate", "key": "fft.output.bytes_per_second", "domain": {"value_type": "number", "unit": "byte/s", "minimum": 0, "maximum": 48000000}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "loss_is_reported", "key": "fft.loss.counters_present", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "timing_closed", "key": "fft.synthesis.timing_met", "description": "A target guarantee, not yet a resource/timing claim; satisfy it with the delivered revision's Vivado post-route report.", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E4_DIFFERENTIAL"}
+      ]
+    },
+    {
+      "id": "zynq_firmware",
+      "version": "1",
+      "description": "Boot chain, U-Boot, kernel/device tree, IIO drivers, DMA service, and gadget-facing data path.",
+      "modes": ["rom", "bootloader", "kernel", "runtime", "update", "recovery"],
+      "initial_mode": "rom",
+      "transitions": [
+        {"source": "rom", "target": "bootloader", "trigger": "fsbl"},
+        {"source": "bootloader", "target": "kernel", "trigger": "boot"},
+        {"source": "kernel", "target": "runtime", "trigger": "userspace_ready"},
+        {"source": "runtime", "target": "update", "trigger": "start_update"},
+        {"source": "update", "target": "bootloader", "trigger": "reboot"},
+        {"source": "bootloader", "target": "recovery", "trigger": "recovery"},
+        {"source": "recovery", "target": "bootloader", "trigger": "reboot"}
+      ],
+      "ports": [
+        {"name": "fpga_control", "kind": "axi4-lite", "direction": "output", "protocol": "p210-register-abi-v1", "clock_domain": "fclk0", "domain": {"value_type": "mapping"}},
+        {"name": "dma_rx", "kind": "dma", "direction": "input", "protocol": "p210-iq-s16le", "clock_domain": "fclk0", "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}, "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}},
+        {"name": "dma_tx", "kind": "dma", "direction": "output", "protocol": "p210-iq-s16le", "clock_domain": "fclk0", "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}, "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}},
+        {"name": "spectrum_dma", "kind": "dma", "direction": "input", "protocol": "nsft-v1", "clock_domain": "fclk0", "domain": {"value_type": "bytes", "min_length": 74, "max_length": 262216}},
+        {"name": "spectrum_ethernet", "kind": "network", "direction": "output", "protocol": "ethernet-nsft-v1", "external": true, "domain": {"value_type": "bytes", "min_length": 1, "max_length": 262216}},
+        {"name": "ad9361_spi", "kind": "spi", "direction": "inout", "protocol": "ad9361-spi-mode0", "clock_domain": "spi_clk", "domain": {"value_type": "mapping"}},
+        {"name": "ad9361_ensm", "kind": "gpio", "direction": "output", "protocol": "ad9361-ensm", "clock_domain": "ps_gpio", "domain": {"value_type": "mapping"}},
+        {"name": "rx_to_usb", "kind": "iio", "direction": "output", "protocol": "libiio-buffer-s16le", "clock_domain": "ps_runtime", "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}, "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 1, "maximum": 61440000}},
+        {"name": "tx_from_usb", "kind": "iio", "direction": "input", "protocol": "libiio-buffer-s16le", "clock_domain": "ps_runtime", "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}, "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 1, "maximum": 61440000}},
+        {"name": "debug_uart", "kind": "uart", "direction": "inout", "protocol": "p210-console", "external": true, "required": false, "domain": {"value_type": "bytes"}}
+      ],
+      "assumptions": [
+        {"id": "regulated_power", "key": "power.rails.stable", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "matching_register_abi", "key": "fpga.register_abi", "domain": {"value_type": "string", "allowed": ["p210-adi-axi-v1"]}},
+        {"id": "overflow_visible", "key": "fpga.overflow.signaled", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "spi_mode", "key": "ad9361.spi.mode", "domain": {"value_type": "int", "allowed": [0]}},
+        {"id": "dma_rate", "key": "dma.sample_rate_hz", "domain": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}},
+        {"id": "fft_spectrum", "key": "fft.output.available", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "fft_loss_reporting", "key": "fft.loss.counters_present", "domain": {"value_type": "bool", "allowed": [true]}}
+      ],
+      "guarantees": [
+        {"id": "runtime_boot", "key": "firmware.boot.runtime", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "bitstream_abi", "key": "firmware.bitstream.abi", "domain": {"value_type": "string", "allowed": ["p210-adi-axi-v1"]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "iio_context", "key": "iio.context.available", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "iio_sample_rate", "key": "iio.sample_rate_hz", "domain": {"value_type": "number", "unit": "sample/s", "minimum": 520833, "maximum": 61440000}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "usb_service", "key": "usb.service.protocol", "domain": {"value_type": "string", "allowed": ["iio-network-v1"]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "spectrum_service", "key": "firmware.spectrum.transport", "domain": {"value_type": "string", "allowed": ["ethernet-nsft-v1"]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "abi_coherent", "key": "firmware.abi.coherent", "description": "Device tree, kernel driver, FPGA registers, and bitstream share one content-addressed ABI.", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"}
+      ]
+    },
+    {
+      "id": "usb_gadget",
+      "version": "1",
+      "description": "USB 2 composite enumeration, CDC console, Ethernet, storage/update surface, and reset behavior.",
+      "modes": ["detached", "enumerating", "configured", "suspended", "recovery"],
+      "initial_mode": "detached",
+      "transitions": [
+        {"source": "detached", "target": "enumerating", "trigger": "vbus"},
+        {"source": "enumerating", "target": "configured", "trigger": "set_configuration"},
+        {"source": "configured", "target": "suspended", "trigger": "suspend"},
+        {"source": "suspended", "target": "configured", "trigger": "resume"},
+        {"source": "configured", "target": "enumerating", "trigger": "bus_reset"},
+        {"source": "enumerating", "target": "recovery", "trigger": "recovery_personality"}
+      ],
+      "ports": [
+        {"name": "rx_from_firmware", "kind": "iio", "direction": "input", "protocol": "libiio-buffer-s16le", "clock_domain": "ps_runtime", "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}, "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 1, "maximum": 61440000}},
+        {"name": "tx_to_firmware", "kind": "iio", "direction": "output", "protocol": "libiio-buffer-s16le", "clock_domain": "ps_runtime", "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}, "rate_hz": {"value_type": "number", "unit": "sample/s", "minimum": 1, "maximum": 61440000}},
+        {"name": "usb_bus", "kind": "usb", "direction": "inout", "protocol": "usb2-composite-p210", "clock_domain": "usb2_bus", "domain": {"value_type": "bytes", "min_length": 0, "max_length": 512}}
+      ],
+      "assumptions": [
+        {"id": "regulated_power", "key": "power.rails.stable", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "firmware_running", "key": "firmware.boot.runtime", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "iio_available", "key": "iio.context.available", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "service_protocol", "key": "usb.service.protocol", "domain": {"value_type": "string", "allowed": ["iio-network-v1"]}},
+        {"id": "host_high_speed", "key": "usb.host.high_speed", "domain": {"value_type": "bool", "allowed": [true]}}
+      ],
+      "guarantees": [
+        {"id": "enumerates", "key": "usb.device.enumerates", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "descriptor_fingerprint", "key": "usb.descriptor.fingerprint", "description": "Observed Neptune-family SHA-256; replace or confirm from the delivered P210-V2.", "domain": {"value_type": "string", "allowed": ["d6d578c6f5edf5d50785be3880fd32d4d95f4b881c924d472355cb0329658c7f", "capture-required"]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "composite_functions", "key": "usb.composite.functions", "description": "Observed interface order; confirm byte-for-byte on the delivered revision.", "domain": {"value_type": "string", "allowed": ["rndis,mass-storage,cdc-acm,native-iio"]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "network_mtu", "key": "usb.network.mtu", "domain": {"value_type": "int", "allowed": [1500]}, "required_evidence": "E4_DIFFERENTIAL"},
+        {"id": "short_packets_preserved", "key": "usb.bulk.short_packet_semantics", "domain": {"value_type": "string", "allowed": ["usb2-compliant"]}, "required_evidence": "E3_INTEGRATION"}
+      ]
+    },
+    {
+      "id": "host_libiio",
+      "version": "1",
+      "description": "Host USB/network functions and the observable libiio-compatible application boundary.",
+      "ports": [
+        {"name": "usb_bus", "kind": "usb", "direction": "inout", "protocol": "usb2-composite-p210", "clock_domain": "usb2_bus", "domain": {"value_type": "bytes", "min_length": 0, "max_length": 512}},
+        {"name": "application_control", "kind": "application", "direction": "inout", "protocol": "libiio-api", "external": true, "domain": {"value_type": "mapping"}},
+        {"name": "application_rx", "kind": "application", "direction": "output", "protocol": "complex-i16", "external": true, "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}},
+        {"name": "application_tx", "kind": "application", "direction": "input", "protocol": "complex-i16", "external": true, "domain": {"value_type": "sequence", "width_bits": 16, "signed": true, "byte_order": "little"}}
+      ],
+      "assumptions": [
+        {"id": "supported_libiio", "key": "host.libiio.major_version", "external": true, "domain": {"value_type": "int", "minimum": 0, "maximum": 1}},
+        {"id": "usb_enumerates", "key": "usb.device.enumerates", "domain": {"value_type": "bool", "allowed": [true]}},
+        {"id": "functions_present", "key": "usb.composite.functions", "domain": {"value_type": "string", "allowed": ["rndis,mass-storage,cdc-acm,native-iio"]}},
+        {"id": "ethernet_mtu", "key": "usb.network.mtu", "domain": {"value_type": "int", "allowed": [1500]}}
+      ],
+      "guarantees": [
+        {"id": "high_speed_host", "key": "usb.host.high_speed", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "libiio_context", "key": "host.libiio.context_available", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"},
+        {"id": "host_sample_rate", "key": "host.iio.sample_rate_hz", "description": "Vendor-advertised sustained host rate; channel/interface scope remains a measurement requirement.", "domain": {"value_type": "number", "unit": "sample/s", "minimum": 1, "maximum": 12000000}, "required_evidence": "E5_CALIBRATED"},
+        {"id": "overflow_visible", "key": "host.iio.overflow_visible", "domain": {"value_type": "bool", "allowed": [true]}, "required_evidence": "E3_INTEGRATION"}
+      ]
+    }
+  ],
+  "connections": [
+    {"source": "board_clock_power.ad9361_ref_clock", "target": "ad9361.ref_clock"},
+    {"source": "rf_frontend.rx_to_chip", "target": "ad9361.rf_rx"},
+    {"source": "ad9361.rf_tx", "target": "rf_frontend.tx_from_chip"},
+    {"source": "ad9361.rx_iq", "target": "fpga_pl.rx_iq"},
+    {"source": "fpga_pl.tx_iq", "target": "ad9361.tx_iq"},
+    {"source": "zynq_firmware.ad9361_spi", "target": "ad9361.spi_control"},
+    {"source": "zynq_firmware.ad9361_ensm", "target": "ad9361.ensm_gpio"},
+    {"source": "zynq_firmware.fpga_control", "target": "fpga_pl.ps_control"},
+    {"source": "zynq_firmware.fpga_control", "target": "pl_fft_pipeline.ps_control"},
+    {"source": "fpga_pl.dma_rx", "target": "zynq_firmware.dma_rx"},
+    {"source": "fpga_pl.dma_rx", "target": "pl_fft_pipeline.iq_in"},
+    {"source": "pl_fft_pipeline.spectrum_out", "target": "zynq_firmware.spectrum_dma"},
+    {"source": "zynq_firmware.dma_tx", "target": "fpga_pl.dma_tx"},
+    {"source": "zynq_firmware.rx_to_usb", "target": "usb_gadget.rx_from_firmware"},
+    {"source": "usb_gadget.tx_to_firmware", "target": "zynq_firmware.tx_from_usb"},
+    {"source": "usb_gadget.usb_bus", "target": "host_libiio.usb_bus"}
+  ]
+}

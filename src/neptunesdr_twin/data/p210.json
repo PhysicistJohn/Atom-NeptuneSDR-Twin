@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "identity": {
+    "manufacturer_listing": "HAMGEEK",
+    "product": "P210",
+    "sku": "95157",
+    "family": "NeptuneSDR",
+    "pcb_revision": null,
+    "status": "listing-confirmed; delivered-unit fingerprint pending"
+  },
+  "processing": {
+    "soc": "XC7Z020-CLG400I",
+    "architecture": "Zynq-7000",
+    "cpu": "dual ARM Cortex-A9",
+    "cpu_cores": 2,
+    "cpu_hz": 666666687,
+    "cpu_hz_vendor_claim": 766000000,
+    "logic_cells_vendor_label": 85000,
+    "ddr_bytes": 536870912,
+    "addressable_byte_bits": 8,
+    "ddr_bus_bits": 16,
+    "ddr_bus_bytes_per_transfer_beat": 2,
+    "ddr_clock_hz": 533333374,
+    "ddr_part_from_public_xsa": "MT41K256M16 RE-125",
+    "fclk0_hz": 100000000,
+    "fclk1_hz": 200000000,
+    "qspi_bytes": 33554432
+  },
+  "radio": {
+    "transceiver": "AD9361",
+    "rx_channels": 2,
+    "tx_channels": 2,
+    "duplex": "2T2R MIMO",
+    "board_min_frequency_hz": 70000000,
+    "board_max_frequency_hz": 6000000000,
+    "min_bandwidth_hz": 200000,
+    "max_bandwidth_hz": 56000000,
+    "reference_clock_hz": 40000000,
+    "tcxo_accuracy_ppm": 0.5,
+    "sma_ports": ["TX1", "RX1", "RX2", "TX2"]
+  },
+  "streaming": {
+    "api": "ADI IIO",
+    "host_sustained_complex_samples_per_second": 12000000,
+    "burst_complex_samples_per_second": 61440000,
+    "iq_significant_bits_per_component": 12,
+    "iq_container_bits_per_component": 16,
+    "complex_sample_bytes_per_channel": 4,
+    "rx_packer_scalar_lanes": 4,
+    "rx_dma_word_bits": 64,
+    "sample_format": "little-endian signed 16-bit container, 12 significant bits",
+    "host_rate_channel_scope": "not stated by vendor; measure on delivered unit"
+  },
+  "interfaces": {
+    "ethernet": {"count": 1, "line_rate_bits_per_second": 1000000000, "phy": "RGMII"},
+    "usb_otg": {"count": 1, "standard": "USB 2.0 high-speed", "connector": "USB-C"},
+    "usb_uart": {"count": 1, "connector": "USB-C", "bridge": "revision-dependent"},
+    "sd": {"count": 1, "kind": "microSD"},
+    "jtag": {"count": 1, "kind": "10-pin debug header"},
+    "boot_switches": {"count": 2},
+    "expansion": {"supported": true, "pinout": "unknown"}
+  },
+  "boot": {
+    "sources": ["qspi", "sd", "jtag"],
+    "observed_sd_root": "/dev/mmcblk0p2",
+    "serial_baud": 115200
+  },
+  "mmio": [
+    {"name": "ddr", "base": 0, "size": 536870912},
+    {"name": "axi-ad9361-rx", "base": 2030174208, "size": 16384, "dt_observed_size": 24576},
+    {"name": "axi-ad9361-tx-dds", "base": 2030190592, "size": 4096},
+    {"name": "axi-dmac-rx", "base": 2084569088, "size": 65536},
+    {"name": "axi-dmac-tx", "base": 2084700160, "size": 65536},
+    {"name": "uart1", "base": 3758100480, "size": 4096},
+    {"name": "usb0", "base": 3758104576, "size": 4096},
+    {"name": "spi0", "base": 3758120960, "size": 4096},
+    {"name": "gpio", "base": 3758137344, "size": 4096},
+    {"name": "gem0", "base": 3758141440, "size": 4096},
+    {"name": "qspi", "base": 3758149632, "size": 4096},
+    {"name": "sdhci0", "base": 3759144960, "size": 4096},
+    {"name": "ocm", "base": 4294705152, "size": 262144}
+  ],
+  "claim_conflicts": [
+    {
+      "field": "processing.ddr_bytes",
+      "listing_values": [536870912, 1073741824],
+      "resolution": 536870912,
+      "basis": "512M appears twice in the confirmed listing and the public P210 device tree declares reg=<0 0x20000000>; 1GByte appears once"
+    },
+    {
+      "field": "processing.cpu_hz",
+      "listing_values": [766000000],
+      "public_xsa_values": [666666687],
+      "resolution": 666666687,
+      "basis": "The pinned public P210 XSA configures PCW_ACT_APU_PERIPHERAL_FREQMHZ=666.666687; confirm the delivered unit from the boot clock summary"
+    }
+  ],
+  "unknown_until_capture": [
+    "PCB and enclosure revision",
+    "delivered CPU and DDR clocks versus the pinned public P210 XSA",
+    "exact USB descriptors and second-port bridge on this unit",
+    "QSPI contents and partition hashes",
+    "factory calibration and oscillator correction",
+    "RF matching, noise figure, gain response, isolation, phase, and thermal drift",
+    "expansion and JTAG pinout",
+    "mechanical dimensions and connector coordinates of the enclosed revision"
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "capture": {
+    "device": "HAMGEEK P210 / NeptuneSDR",
+    "basis": "byte transcription of the supplied high-speed lsusb descriptor map",
+    "captured_on": "2026-07-14",
+    "descriptor_speed": "high-speed",
+    "notes": [
+      "The normal personality deliberately preserves Linux-allocated empty string IDs 8, 10, and 14.",
+      "DFU is metadata only; its flash-writing state machine is owned by the firmware model."
+    ]
+  },
+  "normal": {
+    "device_descriptor_hex": "12 01 00 02 00 00 00 40 56 04 73 b6 15 05 01 02 03 01",
+    "configuration_descriptor_hex": "09 02 da 00 06 01 04 80 fa 03 09 03 08 0b 00 02 02 06 00 07 09 04 00 00 01 02 02 ff 05 05 24 00 10 01 05 24 01 00 01 04 24 02 00 05 24 06 00 01 07 05 82 03 08 00 09 09 04 01 00 02 0a 00 00 06 07 05 81 02 00 02 00 07 05 01 02 00 02 00 09 04 02 00 02 08 06 50 09 07 05 83 02 00 02 00 07 05 02 02 00 02 01 08 0b 03 02 02 02 01 0d 09 04 03 00 01 02 02 01 0b 05 24 00 10 01 05 24 01 00 04 04 24 02 02 05 24 06 03 04 07 05 85 03 0a 00 09 09 04 04 00 02 0a 00 00 0c 07 05 84 02 00 02 00 07 05 03 02 00 02 00 09 04 05 00 06 02 00 00 0f 07 05 86 02 00 02 00 07 05 04 02 00 02 00 07 05 87 02 00 02 00 07 05 05 02 00 02 00 07 05 88 02 00 02 00 07 05 06 02 00 02 00",
+    "language_ids": [
+      "0x0409"
+    ],
+    "strings": {
+      "1": "Analog Devices Inc.",
+      "2": "PlutoSDR (ADALM-PLUTO)",
+      "3": "104473222a87000618000600473ed57ae0",
+      "4": "RNDIS/MSD/ACM/IIOUSBD",
+      "5": "RNDIS Communications Control",
+      "6": "RNDIS Ethernet Data",
+      "7": "RNDIS",
+      "8": "",
+      "9": "Mass Storage",
+      "10": "",
+      "11": "CDC Abstract Control Model (ACM)",
+      "12": "CDC ACM Data",
+      "13": "CDC Serial",
+      "14": "",
+      "15": "IIO"
+    },
+    "native_iio": {
+      "interface": 5,
+      "pipe_count": 3,
+      "requests": {
+        "reset_pipes": 0,
+        "open_pipe": 1,
+        "close_pipe": 2
+      },
+      "pipe_endpoint_pairs": [
+        ["0x86", "0x04"],
+        ["0x87", "0x05"],
+        ["0x88", "0x06"]
+      ]
+    }
+  },
+  "personalities": {
+    "normal": {
+      "vendor_id": "0x0456",
+      "product_id": "0xb673",
+      "device_version": "0x0515",
+      "usb_version": "0x0200",
+      "manufacturer": "Analog Devices Inc.",
+      "product": "PlutoSDR (ADALM-PLUTO)",
+      "interface_count": 6,
+      "endpoint_addresses": [
+        "0x82",
+        "0x81",
+        "0x01",
+        "0x83",
+        "0x02",
+        "0x85",
+        "0x84",
+        "0x03",
+        "0x86",
+        "0x04",
+        "0x87",
+        "0x05",
+        "0x88",
+        "0x06"
+      ],
+      "functions": [
+        "RNDIS control/data (interfaces 0-1)",
+        "USB mass storage (interface 2)",
+        "CDC ACM console control/data (interfaces 3-4)",
+        "native libiio FunctionFS, three pipes (interface 5)"
+      ],
+      "alternate_settings": []
+    },
+    "dfu": {
+      "vendor_id": "0x0456",
+      "product_id": "0xb674",
+      "device_version": "0x0221",
+      "usb_version": "0x0200",
+      "manufacturer": "Analog Devices Inc.",
+      "product": "USB download gadget",
+      "interface_count": 1,
+      "endpoint_addresses": [],
+      "functions": [
+        "USB DFU 1.1 control endpoint, 4096-byte transfer size"
+      ],
+      "alternate_settings": [
+        "boot.dfu",
+        "firmware.dfu",
+        "uboot-extra-env.dfu",
+        "uboot-env.dfu",
+        "spare.dfu"
+      ]
+    }
+  }
+}

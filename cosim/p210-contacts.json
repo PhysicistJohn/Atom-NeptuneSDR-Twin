@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "target": {
+    "qemu_release": "10.0.2",
+    "qemu_commit": "ff3419cbacdc9ad0715c716afeed65bb21a2bbbc",
+    "adi_driver_reference_commit": "7cf8748f1e25f2091c26fd7d49a0fb50a10eb29a"
+  },
+  "sources": [
+    "qemu-10.0.2/include/hw/misc/p210_sdr.h",
+    "qemu-10.0.2/hw/ssi/p210_ad9361.c",
+    "qemu-10.0.2/hw/misc/p210_sdr.c",
+    "qemu-10.0.2/include/hw/misc/p210_fft.h",
+    "qemu-10.0.2/hw/misc/p210_fft.c"
+  ],
+  "memory_map": [
+    {"name": "axi_ad9361_rx", "base": "0x79020000", "size": "0x4000", "guest_dt_span": "0x6000"},
+    {"name": "axi_ad9361_tx_dds", "base": "0x79024000", "size": "0x1000"},
+    {"name": "axi_dmac_rx", "base": "0x7c400000", "size": "0x10000", "gic_spi": 57},
+    {"name": "axi_dmac_tx", "base": "0x7c420000", "size": "0x10000", "gic_spi": 56},
+    {"name": "p210_fft", "base": "0x7c450000", "size": "0x1000", "gic_spi": 58}
+  ],
+  "axi_core_probe": {
+    "rx_version": "0x000a0061",
+    "tx_version": "0x00090061",
+    "id": 0,
+    "datapath_disable": 0,
+    "tx_drp_locked_mask": "0x00020000",
+    "rx_status_valid_mask": "0x00000001",
+    "rx_channel_status": "write-one-to-clear"
+  },
+  "axi_dmac_probe": {
+    "version": "0x00040061",
+    "dma_length_width": 24,
+    "x_length_write_mask": "0x00ffffff",
+    "maximum_transfer_segment_bytes": 16777216,
+    "start_transfer_after_accept": 0,
+    "descriptor_queue_depth": 4,
+    "transfer_id_modulus": 4,
+    "transfer_done_mask": "0x0000000f",
+    "queued_descriptors": "configuration is snapshotted on accepted submit and completed in FIFO order",
+    "irq_pending": "write-one-to-clear",
+    "irq_sot_mask": "0x00000001",
+    "irq_eot_mask": "0x00000002",
+    "rx_direction": "device-to-memory",
+    "tx_direction": "memory-to-device",
+    "rx_payload": {
+      "scan_order": ["RX1_I", "RX1_Q", "RX2_I", "RX2_Q"],
+      "enabled_channel_packing": "ascending scan index, disabled channels omitted",
+      "sample_type": "signed 12-bit two's-complement in a 16-bit storage slot",
+      "endianness": "little",
+      "tone_period_samples": 64,
+      "rx1": {"phase_step": 5, "normalized_frequency": "5/64 Fs", "peak_code": 1536, "initial_phase_steps": 0},
+      "rx2": {"phase_step": 13, "normalized_frequency": "13/64 Fs", "peak_code": 1024, "initial_phase_steps": 8},
+      "phase_continuity": "preserved across DMA segments and cyclic callbacks; reset only by device reset"
+    }
+  },
+  "ad9361_spi": {
+    "controller": "PS SPI0",
+    "chip_select": 0,
+    "instruction_write_mask": "0x8000",
+    "instruction_count_mask": "0x7000",
+    "instruction_address_mask": "0x03ff",
+    "burst_address_order": "descending",
+    "special_reads": {
+      "0x016": "calibration request bits self-clear after modeled side effects",
+      "0x017": "current ENSM state",
+      "0x037": "0x0a product ID and revision",
+      "0x05e": "bit 7 BBPLL locked",
+      "0x1e6": "RX baseband-filter calibration R2346 component code",
+      "0x1eb": "RX baseband-filter calibration C3 MSB component code",
+      "0x1ec": "RX baseband-filter calibration C3 LSB component code",
+      "0x244": "bit 7 RX charge-pump calibration valid",
+      "0x247": "bit 1 RX VCO locked",
+      "0x284": "bit 7 TX charge-pump calibration valid",
+      "0x287": "bit 1 TX VCO locked"
+    },
+    "rx_bbf_calibration": {
+      "trigger": "write bit 7 to 0x016",
+      "p210_startup_bbpll_hz": 983040000,
+      "p210_startup_tune_divide": 9,
+      "p210_startup_outputs": {
+        "0x1e6": "0x01",
+        "0x1eb": "0x00",
+        "0x1ec": "0x36"
+      },
+      "other_bandwidths": "component codes are derived from the inverse-RC equation consumed by the pinned ADI driver"
+    }
+  },
+  "fft_accelerator": {
+    "status": "software-visible QEMU functional ABI",
+    "id": "0x5446464e",
+    "version": "0x00010000",
+    "base": "0x7c450000",
+    "size": "0x1000",
+    "gic_spi": 58,
+    "input": "signed IQ16LE, time-major and channel-interleaved",
+    "output": "uint32 little-endian linear-power bins, channel-major and natural order",
+    "minimum_fft_size": 1024,
+    "maximum_fft_size": 65536,
+    "maximum_channels": 2,
+    "arithmetic": "deterministic integer radix-2 with one-bit scaling per stage (1/N amplitude)",
+    "fidelity_boundary": "functional firmware contract only; no synthesized or timing-closed XC7Z020 RTL is claimed"
+  },
+  "known_non_equivalences": [
+    "RX IQ payload is deterministic synthesized tone data rather than samples from an analog RF input",
+    "TX IQ payload is consumed but has no RF effect",
+    "No analog/RF propagation or impairment model is inside QEMU",
+    "The software-visible QEMU PL FFT ABI exists, but no synthesized or timing-closed XC7Z020 RTL implementation is claimed",
+    "AD9361 calibration timing is collapsed to immediate completion",
+    "AD9361 calibration outputs are representative functional codes, not a die-, temperature- or process-variation model"
+  ]
+}
