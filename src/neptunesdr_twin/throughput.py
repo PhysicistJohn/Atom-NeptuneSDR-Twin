@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import math
 from typing import Dict, Optional
 
 from .fft import (
@@ -187,15 +186,3 @@ class Wideband50MHzProfile:
                 "short undecimated captures"
             ),
         }
-
-
-def maximum_capture_seconds(memory_bytes: int, request: StreamRequest) -> float:
-    if memory_bytes < 0:
-        raise ValueError("memory_bytes must be non-negative")
-    return memory_bytes / request.payload_bytes_per_second
-
-
-def required_decimation(request: StreamRequest, contract: TransportContract) -> int:
-    """Smallest integer rate reduction that satisfies a transport contract."""
-
-    return max(1, math.ceil(request.payload_bytes_per_second / contract.payload_bytes_per_second))

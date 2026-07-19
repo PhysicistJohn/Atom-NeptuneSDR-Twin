@@ -117,8 +117,7 @@ Inspect the fixture:
 
 ```sh
 neptune-twin usb
-python -m unittest tests.test_usb -v
-python -m unittest tests.test_usbip -v
+python -m unittest discover -s tests -v
 ```
 
 ## Host-facing access paths

@@ -1,18 +1,11 @@
-"""Executable assume/guarantee contracts for the NeptuneSDR digital twin.
+"""Assume/guarantee contracts for the NeptuneSDR digital twin.
 
 The module deliberately uses only the Python standard library.  Contracts are
-small enough to load from JSON, strict enough to reject an incompatible wiring,
-and executable as runtime monitors.  The underlying ordering is the usual one:
-
-* an implementation assumption is a refinement when it accepts at least all
-  values accepted by the specification (a weaker assumption), and
-* an implementation guarantee is a refinement when it produces a subset of
-  the values allowed by the specification (a stronger guarantee).
-
-This is not a general theorem prover.  It is a decidable contract algebra for
-the value domains used at this device's typed subsystem boundaries.  A failed
-proof is reported as "not proven" with a useful reason; it is never silently
-treated as compatible.
+small enough to load from JSON and strict enough to reject an incompatible
+wiring.  This is not a general theorem prover.  It is a decidable contract
+algebra for the value domains used at this device's typed subsystem
+boundaries.  A failed proof is reported as "not proven" with a useful reason;
+it is never silently treated as compatible.
 """
 
 from __future__ import annotations
@@ -20,7 +13,6 @@ from __future__ import annotations
 import json
 import math
 import re
-import time
 from dataclasses import dataclass, field, replace
 from enum import Enum, IntEnum
 from pathlib import Path
@@ -458,9 +450,6 @@ class ContractClause:
             depends_on=tuple(raw.get("depends_on", ())),
         )
 
-    def active_in(self, mode: Optional[str]) -> bool:
-        return not self.modes or mode in self.modes
-
 
 @dataclass(frozen=True)
 class ModeTransition:
@@ -564,10 +553,6 @@ class AssumeGuaranteeContract:
                 return port
         raise KeyError("component %s has no port %s" % (self.component_id, name))
 
-    def evidence_level(self, clause_id: str) -> EvidenceLevel:
-        levels = [record.level for record in self.evidence if record.clause_id == clause_id]
-        return max(levels, default=EvidenceLevel.E0_CLAIM)
-
 
 @dataclass(frozen=True)
 class Connection:
@@ -622,25 +607,6 @@ class ContractIssue:
     path: str = ""
     severity: IssueSeverity = IssueSeverity.ERROR
     witness: Any = None
-
-
-@dataclass(frozen=True)
-class RefinementReport:
-    implementation: str
-    specification: str
-    issues: Tuple[ContractIssue, ...] = ()
-
-    @property
-    def ok(self) -> bool:
-        return not any(issue.severity is IssueSeverity.ERROR for issue in self.issues)
-
-    @property
-    def errors(self) -> Tuple[ContractIssue, ...]:
-        return tuple(i for i in self.issues if i.severity is IssueSeverity.ERROR)
-
-    @property
-    def warnings(self) -> Tuple[ContractIssue, ...]:
-        return tuple(i for i in self.issues if i.severity is IssueSeverity.WARNING)
 
 
 @dataclass(frozen=True)
@@ -727,126 +693,6 @@ def _port_relation(source: TypedPort, target: TypedPort) -> Tuple[ContractIssue,
                     )
                 )
     return tuple(issues)
-
-
-def check_refinement(
-    implementation: AssumeGuaranteeContract,
-    specification: AssumeGuaranteeContract,
-    require_evidence: bool = False,
-) -> RefinementReport:
-    """Check weaker assumptions and stronger guarantees.
-
-    For predicates represented as domains this checks ``A_spec <= A_impl`` and
-    ``G_impl <= G_spec``.  Any relation the finite algebra cannot prove is an
-    error, rather than an optimistic guess.
-    """
-
-    issues: List[ContractIssue] = []
-    impl_ports = {port.name: port for port in implementation.ports}
-    spec_ports = {port.name: port for port in specification.ports}
-    for name, spec_port in spec_ports.items():
-        impl_port = impl_ports.get(name)
-        path = "ports.%s" % name
-        if impl_port is None:
-            issues.append(ContractIssue("missing-port", "implementation omits a specified port", path))
-            continue
-        if impl_port.kind is not spec_port.kind or impl_port.protocol != spec_port.protocol:
-            issues.append(ContractIssue("port-type-refinement", "port type or protocol changed", path))
-            continue
-        if impl_port.direction is not spec_port.direction:
-            issues.append(ContractIssue("port-direction-refinement", "port direction changed", path))
-            continue
-        relations: List[DomainRelation] = []
-        if spec_port.direction in (PortDirection.INPUT, PortDirection.INOUT):
-            relations.append(spec_port.domain.subset_of(impl_port.domain))
-        if spec_port.direction in (PortDirection.OUTPUT, PortDirection.INOUT):
-            relations.append(impl_port.domain.subset_of(spec_port.domain))
-        for relation in relations:
-            if not relation.proven:
-                issues.append(
-                    ContractIssue(
-                        "port-domain-refinement",
-                        relation.reason,
-                        path,
-                        witness=relation.witness,
-                    )
-                )
-
-    for name, impl_port in impl_ports.items():
-        if (
-            name not in spec_ports
-            and impl_port.external
-            and impl_port.required
-            and impl_port.direction in (PortDirection.INPUT, PortDirection.INOUT)
-        ):
-            issues.append(
-                ContractIssue(
-                    "new-required-input",
-                    "implementation adds a required environmental input",
-                    "ports.%s" % name,
-                )
-            )
-
-    # Every implementation assumption must be implied by the specification.
-    for impl_clause in implementation.assumptions:
-        candidates = [c for c in specification.assumptions if c.key == impl_clause.key]
-        if not candidates:
-            issues.append(
-                ContractIssue(
-                    "stronger-assumption",
-                    "implementation adds assumption %s" % impl_clause.key,
-                    "assumptions.%s" % impl_clause.id,
-                )
-            )
-            continue
-        relations = [_clause_entails(spec_clause, impl_clause) for spec_clause in candidates]
-        if not any(relation.proven for relation in relations):
-            issues.append(
-                ContractIssue(
-                    "stronger-assumption",
-                    "; ".join(relation.reason for relation in relations),
-                    "assumptions.%s" % impl_clause.id,
-                )
-            )
-
-    # Every specified guarantee must be implied by an implementation guarantee.
-    for spec_clause in specification.guarantees:
-        candidates = [c for c in implementation.guarantees if c.key == spec_clause.key]
-        if not candidates:
-            issues.append(
-                ContractIssue(
-                    "missing-guarantee",
-                    "implementation does not guarantee %s" % spec_clause.key,
-                    "guarantees.%s" % spec_clause.id,
-                )
-            )
-            continue
-        relations = [_clause_entails(impl_clause, spec_clause) for impl_clause in candidates]
-        proven = [candidate for candidate, relation in zip(candidates, relations) if relation.proven]
-        if not proven:
-            issues.append(
-                ContractIssue(
-                    "weaker-guarantee",
-                    "; ".join(relation.reason for relation in relations),
-                    "guarantees.%s" % spec_clause.id,
-                )
-            )
-            continue
-        achieved = max(implementation.evidence_level(item.id) for item in proven)
-        if achieved < spec_clause.required_evidence:
-            issues.append(
-                ContractIssue(
-                    "insufficient-evidence",
-                    "%s achieved, %s required"
-                    % (achieved.name, spec_clause.required_evidence.name),
-                    "guarantees.%s" % spec_clause.id,
-                    severity=(IssueSeverity.ERROR if require_evidence else IssueSeverity.WARNING),
-                )
-            )
-
-    if specification.modes and not set(specification.modes).issubset(implementation.modes):
-        issues.append(ContractIssue("missing-mode", "implementation does not support all specified modes"))
-    return RefinementReport(implementation.component_id, specification.component_id, tuple(issues))
 
 
 def compose_contracts(
@@ -989,166 +835,6 @@ def compose_contracts(
     return CompositionReport(name, tuple(issues), tuple(bindings), composite)
 
 
-def check_evidence(contract: AssumeGuaranteeContract) -> RefinementReport:
-    issues: List[ContractIssue] = []
-    for guarantee in contract.guarantees:
-        actual = contract.evidence_level(guarantee.id)
-        if actual < guarantee.required_evidence:
-            issues.append(
-                ContractIssue(
-                    "insufficient-evidence",
-                    "%s achieved, %s required" % (actual.name, guarantee.required_evidence.name),
-                    "guarantees.%s" % guarantee.id,
-                )
-            )
-    return RefinementReport(contract.component_id, contract.component_id, tuple(issues))
-
-
-class MonitorStatus(str, Enum):
-    PASS = "pass"
-    FAIL = "fail"
-    MISSING = "missing"
-    BLOCKED = "blocked"
-    INACTIVE = "inactive"
-
-
-@dataclass(frozen=True)
-class MonitorOutcome:
-    clause_id: str
-    key: str
-    status: MonitorStatus
-    value: Any = None
-    message: str = ""
-
-
-@dataclass(frozen=True)
-class MonitorReport:
-    component_id: str
-    mode: Optional[str]
-    timestamp: float
-    assumptions_satisfied: bool
-    guarantees_satisfied: Optional[bool]
-    assumption_outcomes: Tuple[MonitorOutcome, ...]
-    guarantee_outcomes: Tuple[MonitorOutcome, ...]
-
-    @property
-    def ok(self) -> bool:
-        return self.assumptions_satisfied and self.guarantees_satisfied is True
-
-
-_MISSING = object()
-
-
-def _resolve_fact(facts: Mapping[str, Any], key: str) -> Any:
-    if key in facts:
-        return facts[key]
-    current: Any = facts
-    for part in key.split("."):
-        if not isinstance(current, Mapping) or part not in current:
-            return _MISSING
-        current = current[part]
-    return current
-
-
-class RuntimeMonitor:
-    """Stateful runtime monitor with explicit assume/guarantee vacuity."""
-
-    def __init__(self, contract: AssumeGuaranteeContract) -> None:
-        self.contract = contract
-        self.facts: Dict[str, Any] = {}
-        self.mode = contract.initial_mode
-        self.history: List[MonitorReport] = []
-
-    def observe(self, key: str, value: Any) -> None:
-        self.facts[key] = value
-
-    def update(self, facts: Mapping[str, Any]) -> None:
-        self.facts.update(facts)
-
-    def set_mode(self, target: str, trigger: str = "") -> None:
-        if target not in self.contract.modes:
-            raise ValueError("unknown mode %s" % target)
-        if self.mode is None:
-            self.mode = target
-            return
-        allowed = any(
-            transition.source == self.mode
-            and transition.target == target
-            and (not transition.trigger or transition.trigger == trigger)
-            for transition in self.contract.transitions
-        )
-        if not allowed:
-            raise ValueError("illegal transition %s -> %s" % (self.mode, target))
-        self.mode = target
-
-    def _evaluate_clause(self, clause: ContractClause) -> MonitorOutcome:
-        if not clause.active_in(self.mode):
-            return MonitorOutcome(clause.id, clause.key, MonitorStatus.INACTIVE)
-        value = _resolve_fact(self.facts, clause.key)
-        if value is _MISSING:
-            return MonitorOutcome(
-                clause.id,
-                clause.key,
-                MonitorStatus.MISSING,
-                message="fact was not observed",
-            )
-        error = clause.domain.validation_error(value)
-        if error:
-            return MonitorOutcome(clause.id, clause.key, MonitorStatus.FAIL, value, error)
-        return MonitorOutcome(clause.id, clause.key, MonitorStatus.PASS, value)
-
-    def evaluate(self, timestamp: Optional[float] = None) -> MonitorReport:
-        assumption_outcomes = tuple(
-            self._evaluate_clause(clause) for clause in self.contract.assumptions
-        )
-        active_assumptions = [
-            outcome
-            for outcome in assumption_outcomes
-            if outcome.status is not MonitorStatus.INACTIVE
-        ]
-        assumptions_satisfied = all(
-            outcome.status is MonitorStatus.PASS for outcome in active_assumptions
-        )
-        if assumptions_satisfied:
-            guarantee_outcomes = tuple(
-                self._evaluate_clause(clause) for clause in self.contract.guarantees
-            )
-            active_guarantees = [
-                outcome
-                for outcome in guarantee_outcomes
-                if outcome.status is not MonitorStatus.INACTIVE
-            ]
-            guarantees_satisfied: Optional[bool] = all(
-                outcome.status is MonitorStatus.PASS for outcome in active_guarantees
-            )
-        else:
-            guarantee_outcomes = tuple(
-                MonitorOutcome(
-                    clause.id,
-                    clause.key,
-                    MonitorStatus.INACTIVE
-                    if not clause.active_in(self.mode)
-                    else MonitorStatus.BLOCKED,
-                    message="environment assumptions are not satisfied",
-                )
-                for clause in self.contract.guarantees
-            )
-            guarantees_satisfied = None
-        report = MonitorReport(
-            self.contract.component_id,
-            self.mode,
-            time.time() if timestamp is None else timestamp,
-            assumptions_satisfied,
-            guarantees_satisfied,
-            assumption_outcomes,
-            guarantee_outcomes,
-        )
-        self.history.append(report)
-        return report
-
-    check = evaluate
-
-
 @dataclass(frozen=True)
 class ContractSystem:
     name: str
@@ -1194,17 +880,10 @@ __all__ = [
     "EvidenceRecord",
     "IssueSeverity",
     "ModeTransition",
-    "MonitorOutcome",
-    "MonitorReport",
-    "MonitorStatus",
     "PortDirection",
     "PortKind",
-    "RefinementReport",
-    "RuntimeMonitor",
     "TypedPort",
     "ValueDomain",
     "ValueType",
-    "check_evidence",
-    "check_refinement",
     "compose_contracts",
 ]

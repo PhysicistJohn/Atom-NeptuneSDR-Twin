@@ -198,28 +198,6 @@ def unpack_iq_frames(
     return tuple(result)
 
 
-def validate_frame_continuity(
-    frames: Iterable[IQFrame], expected_start: Optional[int] = None
-) -> int:
-    """Raise :class:`ContractViolation` at the first sequence discontinuity.
-
-    Returns the next expected sample index, which makes validation composable
-    across multiple USB transfers or DMA descriptors.
-    """
-
-    expected = expected_start
-    for frame in frames:
-        if expected is None:
-            expected = frame.sample_index
-        if frame.sample_index != expected:
-            raise ContractViolation(
-                "IQ sample discontinuity: expected %d, observed %d"
-                % (expected, frame.sample_index)
-            )
-        expected += 1
-    return 0 if expected is None else expected
-
-
 class OverrunPolicy(str, Enum):
     """Action when a producer exceeds FIFO capacity."""
 
@@ -876,14 +854,6 @@ class RFModel:
         return rounded, False
 
 
-# Descriptive aliases used by firmware- and signal-oriented callers.
-IQSample = IQ
-SampleFIFO = BoundedFIFO
-RFEngine = RFModel
-pack_frames = pack_iq_frames
-unpack_frames = unpack_iq_frames
-
-
 __all__ = [
     "BYTES_PER_FRAME",
     "INT16_MAX",
@@ -894,15 +864,9 @@ __all__ = [
     "FIFOStats",
     "IQ",
     "IQFrame",
-    "IQSample",
     "OverrunPolicy",
-    "RFEngine",
     "RFModel",
-    "SampleFIFO",
     "UnderrunPolicy",
-    "pack_frames",
     "pack_iq_frames",
-    "unpack_frames",
     "unpack_iq_frames",
-    "validate_frame_continuity",
 ]
