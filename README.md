@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/logo.jpg" alt="AtomOS NeptuneSDR Twin" width="520"></p>
+
 # NeptuneSDR / HAMGEEK P210 digital twin
 
 This repository is a complete, firmware-executing, contract-driven virtual
