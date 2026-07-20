@@ -1,13 +1,12 @@
 <p align="center"><img src="docs/brand/logo.jpg" alt="AtomOS NeptuneSDR Twin" width="520"></p>
 
-# NeptuneSDR / HAMGEEK P210 digital twin
+# AtomOS NeptuneSDR Twin
 
-This repository is a complete, firmware-executing, contract-driven virtual
-development twin of the advertised HAMGEEK P210 / NeptuneSDR platform. Its
-P210-enabled QEMU
+AtomOS NeptuneSDR Twin is a firmware-executing, contract-driven digital twin
+of the advertised HAMGEEK P210 / NeptuneSDR platform. Its P210-enabled QEMU
 machine runs ARM instructions from the public P210 Linux kernel/device tree
 against board-visible AD9361 SPI, CF-AXI ADC/DDS, four-entry AXI-DMAC, dual
-Cortex-A9, GEM, DDR, interrupt, and proposed PL FFT contacts.  The released ARM
+Cortex-A9, GEM, DDR, interrupt, and proposed PL FFT contacts. The released ARM
 `iiod` and official host libiio operate across that machine; a second reference
 layer supplies deterministic continuous RF/PL behavior, a standard USB/IP
 composite device, contract monitors, and golden vectors.
@@ -46,9 +45,8 @@ and tears every process down together on Ctrl-C. Use `--no-build` after the
 first build. The default USB/IP listener is loopback-only; pass
 `--usbip-host 0.0.0.0` only for a trusted remote Linux client.
 
-For the fast deterministic layer—including consecutive 2x2 sample time,
-retune-atomic averaging, explicit lag and bounded no-silent-drop
-backpressure—run:
+For the fast deterministic layer (consecutive 2x2 sample time, retune-atomic
+averaging, explicit lag, and bounded no-silent-drop backpressure), run:
 
 ```sh
 neptune-twin appliance
@@ -198,7 +196,7 @@ python3 scripts/qemu_boot.py --artifact p210-sd-boot --run
 
 That bounded `qemu_boot.py` harness remains intentionally narrow: its P210
 result is `kernel-entry-only` because the public P210 bundle has no rootfs, and
-its stock Pluto result is `kernel-and-initramfs-entry`.  The separate
+its stock Pluto result is `kernel-and-initramfs-entry`. The separate
 P210-enabled runtime described above is what executes the AD9361/CF-AXI/DMAC,
 real IIO/IIOD, Ethernet, and proposed FFT contacts. Neither path executes the
 public FPGA bitstream. USB/IP supplies host enumeration at the USB protocol
@@ -219,7 +217,7 @@ contact without claiming an emulated electrical PHY.
 | Firmware/PL artifacts | Hash-locked public P210 kernel/DT/XSA and official Pluto v0.39 rootfs; ELF/ABI audit, derived initramfs, source-built QEMU runtime | Provenance-preserving composition, not seller-authored full firmware, signed replacement, or bitstream execution |
 | Throughput | Separate internal, USB 2.0, Gigabit Ethernet and advertised host-rate contracts | Arithmetic is exact; delivered-unit throughput is unmeasured |
 
-The decomposition and the reason contacts—not internal implementation resemblance—define equivalence are described in [Architecture](docs/ARCHITECTURE.md).
+The decomposition, and why contacts (not internal implementation resemblance) define equivalence, are described in [Architecture](docs/ARCHITECTURE.md).
 
 ## The 50 MHz requirement
 
@@ -229,7 +227,7 @@ At 61.44 MSPS with two channels and native 16-bit I/Q containers, the raw payloa
 
 The default architecture budget is a 65,536-bin, two-channel on-chip FFT at 61.44 MSPS. Rate-limiting/averaging to at most 20 spectrum updates/s and emitting 16-bit log-power bins in framed `NSFT` version 1 packets (network byte order with CRC32) reduces full-spectrum egress to roughly 5.24 MB/s. `neptune-twin fft-plan` proves that declared arithmetic/contact budget. The continuous reference PL runtime executes this exact averaging/dataflow convention with no silent drops and explicit wall-clock lag. The ARM acceptance service exercises the firmware-visible accelerator one block at a time. A deployable Vivado implementation still needs a direct sample path, synthesis, resource, CDC and post-route timing evidence.
 
-The composed twin can publish the same self-framing NSFT byte stream over TCP with `NeptuneSDRTwin.start_spectrum_publisher()` and decode arbitrary TCP chunks with `SpectrumStreamDecoder`. The tested virtual path is the dedicated spectrum TCP contact and the intended primary deployed path is physical Gigabit Ethernet. The current narrow USB-RNDIS model carries IIOD only; it does not silently claim an NSFT proxy. TCP is deliberate: a full 65,536-bin packet—especially float32—does not fit in one UDP datagram.
+The composed twin can publish the same self-framing NSFT byte stream over TCP with `NeptuneSDRTwin.start_spectrum_publisher()` and decode arbitrary TCP chunks with `SpectrumStreamDecoder`. The tested virtual path is the dedicated spectrum TCP contact and the intended primary deployed path is physical Gigabit Ethernet. The current narrow USB-RNDIS model carries IIOD only; it does not silently claim an NSFT proxy. TCP is deliberate: a full 65,536-bin packet, especially in float32, does not fit in one UDP datagram.
 
 Read [50 MHz wideband plan](docs/WIDEBAND_50MHZ.md) before buying test gear or designing around this bandwidth.
 
@@ -311,6 +309,19 @@ Device Controller; without `--apply` it changes nothing. See
 Keep first-arrival work RX-only. Do not connect a TX port directly to an RX port, do not transmit into an antenna during bench validation, and do not exceed the conservative input envelope in the contracts. Use a 50-ohm conducted setup, rated attenuators, a dummy load, and independently verified power levels. Operation must comply with the radio rules applicable at the test location.
 
 This project does not automatically flash firmware or claim vendor authorization to use Analog Devices’ USB VID on a redistributed product.
+
+## Part of the AtomOS suite
+
+This repository is one of eight AtomOS repositories:
+
+- [Atom-Atomizer](https://github.com/PhysicistJohn/Atom-Atomizer): AI-native spectrum analyzer application.
+- [Atom-Classifier](https://github.com/PhysicistJohn/Atom-Classifier): Bayesian RF waveform classification.
+- [Atom-Firmware](https://github.com/PhysicistJohn/Atom-Firmware): reverse-engineered, LLVM cross-built TinySA firmware.
+- [Atom-Flasher](https://github.com/PhysicistJohn/Atom-Flasher): fail-closed firmware flasher.
+- [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): this repository.
+- [Atom-SignalLab](https://github.com/PhysicistJohn/Atom-SignalLab): 3GPP and reference signal generation.
+- [Atom-TinySA-Twin](https://github.com/PhysicistJohn/Atom-TinySA-Twin): Renode digital twin that boots real ZS407 firmware.
+- [Atom-Website](https://github.com/PhysicistJohn/Atom-Website): product site.
 
 ## License boundary
 
