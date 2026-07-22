@@ -25,7 +25,9 @@ from urllib.parse import unquote, urlsplit
 
 
 LOCK_SCHEMA_VERSION = 1
+LOCK_PROFILE = "qemu-development"
 DEFAULT_INTERFACE_PATH = "specs/p210-firmware-interface-v1.json"
+MANAGED_CACHE_PARTS = (".cache", "deps", "firmwave")
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SCP_REMOTE = re.compile(r"(?:[^@/:]+@)?([^/:]+):(.+)\Z")
@@ -109,6 +111,11 @@ def load_lock(path: Path) -> FirmwaveLock:
     if type(version) is not int or version != LOCK_SCHEMA_VERSION:
         raise ResolutionError(
             f"schema_version must be integer {LOCK_SCHEMA_VERSION}, got {version!r}"
+        )
+    profile = _require_string(root, "profile", "lock")
+    if profile != LOCK_PROFILE:
+        raise ResolutionError(
+            f"lock.profile must be exactly {LOCK_PROFILE!r}, got {profile!r}"
         )
     repository = _require_mapping(root.get("repository"), "repository")
     interface = _require_mapping(root.get("interface"), "interface")
@@ -223,6 +230,34 @@ def _interface_file(root: Path, relative: str) -> Path:
     return resolved
 
 
+def _hidden_index_flags(root: Path) -> tuple[tuple[str, str], ...]:
+    """Return tracked paths hidden from ordinary worktree-dirtiness checks.
+
+    ``git status`` and ``git diff`` intentionally trust the skip-worktree and
+    assume-unchanged index bits.  A release dependency must not: either bit can
+    conceal a modified tracked file while leaving the checkout apparently
+    clean.  With ``git ls-files -v``, ``S`` denotes skip-worktree and a
+    lowercase tag denotes assume-unchanged (``s`` can therefore denote both).
+    """
+
+    entries = _git(root, "ls-files", "-v", "-z")
+    hidden: list[tuple[str, str]] = []
+    for entry in entries.split("\0"):
+        if not entry:
+            continue
+        if len(entry) < 3 or entry[1] != " ":
+            raise ResolutionError("cannot parse Git index flags safely")
+        marker = entry[0]
+        path = entry[2:]
+        flags: list[str] = []
+        if marker.upper() == "S":
+            flags.append("skip-worktree")
+        if marker.islower():
+            flags.append("assume-unchanged")
+        hidden.extend((path, flag) for flag in flags)
+    return tuple(hidden)
+
+
 def verify_checkout(
     root: Path,
     lock: FirmwaveLock,
@@ -274,6 +309,14 @@ def verify_checkout(
             "canonical interface SHA-256 mismatch: "
             f"expected {lock.interface_sha256}, found {interface_digest}"
         )
+    hidden_flags = _hidden_index_flags(root)
+    if hidden_flags:
+        rendered = ", ".join(
+            f"{path} ({flag})" for path, flag in hidden_flags
+        )
+        raise ResolutionError(
+            "checkout contains tracked paths hidden by Git index flags: " + rendered
+        )
     status = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
     clean = not status
     if not clean and not allow_dirty:
@@ -303,13 +346,72 @@ def _existing(path: Path) -> bool:
     return os.path.lexists(str(path.expanduser()))
 
 
+def _assert_safe_managed_cache_path(repo_root: Path, target: Path) -> Path:
+    """Validate an immediate child of the Twin-owned managed cache.
+
+    This check is deliberately lexical *and* physical.  In particular, no
+    existing component from ``.cache`` through ``target`` may be a symlink.
+    That invariant prevents a crafted cache path from redirecting clone,
+    replacement, or cleanup operations outside the Twin checkout.
+    """
+
+    repo_root = repo_root.expanduser().resolve()
+    managed_root = repo_root.joinpath(*MANAGED_CACHE_PARTS)
+    target = target.expanduser()
+    if not target.is_absolute():
+        target = Path(os.path.abspath(target))
+    try:
+        relative = target.relative_to(managed_root)
+    except ValueError as exc:
+        raise ResolutionError(
+            f"managed cache target escapes {managed_root}: {target}"
+        ) from exc
+    if len(relative.parts) != 1 or relative.parts[0] in ("", ".", ".."):
+        raise ResolutionError(
+            f"managed cache target must be an immediate child of {managed_root}: {target}"
+        )
+
+    cursor = repo_root
+    for part in (*MANAGED_CACHE_PARTS, relative.parts[0]):
+        cursor = cursor / part
+        if not _existing(cursor):
+            continue
+        if cursor.is_symlink():
+            raise ResolutionError(
+                f"managed cache path cannot contain symlinks: {cursor}"
+            )
+        try:
+            physical = cursor.resolve(strict=True)
+            physical.relative_to(repo_root)
+        except (OSError, ValueError) as exc:
+            raise ResolutionError(
+                f"managed cache path is not physically beneath the Twin: {cursor}"
+            ) from exc
+        if physical != cursor:
+            raise ResolutionError(
+                f"managed cache path is not physically canonical: {cursor}"
+            )
+        if cursor != target and not cursor.is_dir():
+            raise ResolutionError(
+                f"managed cache parent is not a directory: {cursor}"
+            )
+    if _existing(target) and not target.is_dir():
+        raise ResolutionError(
+            f"managed cache target is not a safe directory: {target}"
+        )
+    return managed_root
+
+
 def _populate_cache(
-    target: Path, lock: FirmwaveLock, lock_path: Path
+    repo_root: Path, target: Path, lock: FirmwaveLock, lock_path: Path
 ) -> Resolution:
+    _assert_safe_managed_cache_path(repo_root, target)
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)
+    _assert_safe_managed_cache_path(repo_root, target)
     temporary = Path(tempfile.mkdtemp(prefix=f".{lock.commit}.", dir=str(parent)))
     try:
+        _assert_safe_managed_cache_path(repo_root, temporary)
         _git(temporary, "init", "--quiet")
         _git(temporary, "remote", "add", "origin", lock.repository_url)
         _git(temporary, "fetch", "--quiet", "--depth", "1", "origin", lock.commit)
@@ -320,11 +422,12 @@ def _populate_cache(
             lock_path=lock_path,
             source="managed-cache",
         )
-        if target.is_symlink() or (target.exists() and not target.is_dir()):
-            raise ResolutionError(f"managed cache target is not a safe directory: {target}")
+        _assert_safe_managed_cache_path(repo_root, target)
         if target.exists():
             shutil.rmtree(target)
+        _assert_safe_managed_cache_path(repo_root, target)
         os.replace(str(temporary), str(target))
+        _assert_safe_managed_cache_path(repo_root, target)
         return verify_checkout(
             target,
             lock,
@@ -332,7 +435,8 @@ def _populate_cache(
             source="managed-cache",
         )
     finally:
-        if temporary.exists():
+        if _existing(temporary):
+            _assert_safe_managed_cache_path(repo_root, temporary)
             shutil.rmtree(temporary)
 
 
@@ -378,6 +482,7 @@ def resolve_firmwave(
         )
 
     target = repo_root / ".cache" / "deps" / "firmwave" / lock.commit
+    _assert_safe_managed_cache_path(repo_root, target)
     if _existing(target):
         try:
             return verify_checkout(
@@ -394,7 +499,7 @@ def resolve_firmwave(
         raise ResolutionError(
             "Firmwave dependency is not available locally and --offline forbids fetching"
         )
-    return _populate_cache(target, lock, lock_path)
+    return _populate_cache(repo_root, target, lock, lock_path)
 
 
 def _parser(repo_root: Path) -> argparse.ArgumentParser:

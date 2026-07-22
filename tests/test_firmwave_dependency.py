@@ -49,6 +49,9 @@ class Fixture:
         interface = self.remote / "specs" / "twin-interface.json"
         interface.parent.mkdir()
         interface.write_text('{"schema":"neptune-firmwave-twin-v1"}\n', encoding="utf-8")
+        payload = self.remote / "firmware" / "runtime.txt"
+        payload.parent.mkdir()
+        payload.write_text("trusted runtime\n", encoding="utf-8")
         git(self.remote, "add", ".")
         git(self.remote, "commit", "--quiet", "-m", "interface")
         self.commit = git(self.remote, "rev-parse", "HEAD")
@@ -72,8 +75,11 @@ class Fixture:
             },
         }
         for dotted, value in changes.items():
-            group, field = dotted.split("__", 1)
-            payload[group][field] = value  # type: ignore[index]
+            if "__" in dotted:
+                group, field = dotted.split("__", 1)
+                payload[group][field] = value  # type: ignore[index]
+            else:
+                payload[dotted] = value
         self.lock_path.write_text(json.dumps(payload), encoding="utf-8")
 
     def clone(self, name: str = "checkout") -> Path:
@@ -186,6 +192,19 @@ class FirmwaveDependencyTests(unittest.TestCase):
                 with self.assertRaises(resolver.ResolutionError):
                     resolver.load_lock(self.fixture.lock_path)
 
+    def test_lock_profile_is_required_and_exact(self):
+        document = json.loads(self.fixture.lock_path.read_text(encoding="utf-8"))
+        del document["profile"]
+        self.fixture.lock_path.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaisesRegex(resolver.ResolutionError, "profile"):
+            resolver.load_lock(self.fixture.lock_path)
+
+        for invalid in (None, "", "production", "QEMU-DEVELOPMENT", 1):
+            with self.subTest(profile=invalid):
+                self.fixture.write_lock(profile=invalid)
+                with self.assertRaisesRegex(resolver.ResolutionError, "profile"):
+                    resolver.load_lock(self.fixture.lock_path)
+
     def test_symlinked_interface_is_rejected(self):
         checkout = self.fixture.clone()
         interface = checkout / "specs" / "twin-interface.json"
@@ -206,6 +225,76 @@ class FirmwaveDependencyTests(unittest.TestCase):
         with self.assertRaisesRegex(resolver.ResolutionError, "--offline"):
             self.resolve()
         self.assertFalse((self.twin_root / ".cache").exists())
+
+    def test_managed_cache_rejects_symlinked_parent_without_touching_target(self):
+        for component in (".cache", ".cache/deps", ".cache/deps/firmwave"):
+            with self.subTest(component=component):
+                with tempfile.TemporaryDirectory(dir=self.base) as case_raw:
+                    case = Path(case_raw)
+                    twin = case / "Atom-NeptuneSDR-Twin"
+                    twin.mkdir()
+                    outside = case / "outside"
+                    outside.mkdir()
+                    link = twin / component
+                    link.parent.mkdir(parents=True, exist_ok=True)
+                    link.symlink_to(outside, target_is_directory=True)
+                    escaped_target = outside
+                    if component == ".cache":
+                        escaped_target = (
+                            escaped_target / "deps" / "firmwave" / self.fixture.commit
+                        )
+                    elif component == ".cache/deps":
+                        escaped_target = (
+                            escaped_target / "firmwave" / self.fixture.commit
+                        )
+                    else:
+                        escaped_target /= self.fixture.commit
+                    escaped_target.mkdir(parents=True)
+                    marker = escaped_target / "must-survive"
+                    marker.write_text("outside\n", encoding="utf-8")
+
+                    with self.assertRaisesRegex(
+                        resolver.ResolutionError, "cannot contain symlinks"
+                    ):
+                        self.resolve(repo_root=twin, offline=False)
+                    self.assertEqual(marker.read_text(encoding="utf-8"), "outside\n")
+
+    def test_managed_cache_rejects_symlink_target_without_touching_destination(self):
+        managed = self.twin_root / ".cache" / "deps" / "firmwave"
+        managed.mkdir(parents=True)
+        outside = self.base / "outside-target"
+        outside.mkdir()
+        marker = outside / "must-survive"
+        marker.write_text("outside\n", encoding="utf-8")
+        (managed / self.fixture.commit).symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaisesRegex(
+            resolver.ResolutionError, "cannot contain symlinks"
+        ):
+            self.resolve(offline=False)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "outside\n")
+
+    def test_skip_worktree_cannot_hide_a_modified_tracked_file(self):
+        checkout = self.fixture.clone()
+        hidden = checkout / "firmware" / "runtime.txt"
+        git(checkout, "update-index", "--skip-worktree", "firmware/runtime.txt")
+        hidden.write_text("tampered runtime\n", encoding="utf-8")
+        self.assertEqual(git(checkout, "status", "--porcelain=v1"), "")
+
+        with self.assertRaisesRegex(resolver.ResolutionError, "skip-worktree"):
+            self.resolve(explicit_root=checkout)
+        self.assertEqual(hidden.read_text(encoding="utf-8"), "tampered runtime\n")
+
+    def test_assume_unchanged_cannot_hide_a_modified_tracked_file(self):
+        checkout = self.fixture.clone()
+        hidden = checkout / "firmware" / "runtime.txt"
+        git(checkout, "update-index", "--assume-unchanged", "firmware/runtime.txt")
+        hidden.write_text("tampered runtime\n", encoding="utf-8")
+        self.assertEqual(git(checkout, "status", "--porcelain=v1"), "")
+
+        with self.assertRaisesRegex(resolver.ResolutionError, "assume-unchanged"):
+            self.resolve(explicit_root=checkout)
+        self.assertEqual(hidden.read_text(encoding="utf-8"), "tampered runtime\n")
 
     def test_online_resolution_fetches_only_the_locked_commit_into_cache(self):
         (self.fixture.remote / "later.txt").write_text("later\n", encoding="utf-8")

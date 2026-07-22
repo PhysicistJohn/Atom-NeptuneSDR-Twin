@@ -117,6 +117,17 @@ def verify_bundle(
         raise ValueError("Firmwave manifest interface hash is invalid")
     if locked_interface.get("sha256") != interface_sha:
         raise ValueError("Firmwave interface hash does not match the dependency lock")
+    interface_document = _load_object(actual_interface, "Firmwave interface")
+    if interface_document.get("schema") != INTERFACE_SCHEMA:
+        raise ValueError("locked Firmwave interface has an unsupported schema")
+    produced = interface_document.get("produced_artifacts")
+    if not isinstance(produced, dict):
+        raise ValueError("Firmwave interface has no produced_artifacts mapping")
+    canonical_paths: Dict[str, PurePosixPath] = {}
+    for name in REQUIRED_ARTIFACTS:
+        canonical_paths[name] = _safe_relative(
+            produced.get(name), "Firmwave interface artifact %s path" % name
+        )
 
     generated = manifest.get("generated_artifacts")
     if not isinstance(generated, dict):
@@ -124,6 +135,18 @@ def verify_bundle(
     missing = [name for name in REQUIRED_ARTIFACTS if name not in generated]
     if missing:
         raise ValueError("Firmwave bundle lacks required artifacts: %s" % ", ".join(missing))
+    for name, canonical in canonical_paths.items():
+        raw = generated[name]
+        if not isinstance(raw, Mapping):
+            raise ValueError("Firmwave generated artifact entries must be named objects")
+        declared = _safe_relative(
+            raw.get("path"), "generated artifact %s path" % name
+        )
+        if declared != canonical or raw.get("path") != produced.get(name):
+            raise ValueError(
+                "Firmwave generated artifact %s path does not match the locked interface"
+                % name
+            )
 
     verified: Dict[str, Dict[str, Any]] = {}
     seen_paths = set()

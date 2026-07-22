@@ -60,16 +60,41 @@ export PYTHONPATH="$FIRMWAVE_ROOT/src:$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 # The live qtests discover the pinned executable. Build it before the cosim
 # suite on a fresh checkout so they cannot be silently skipped in a full run.
 if [ "$FIRMWARE" = yes ]; then
+    QEMU_CACHE=${P210_QEMU_CACHE:-"$ROOT/.cache/qemu-p210"}
+    QEMU_BINARY=${P210_QEMU_BINARY:-"$QEMU_CACHE/bin/qemu-system-arm"}
+    QEMU_BUILD_DIR=${P210_QEMU_BUILD_DIR:-"$QEMU_CACHE/src/qemu-10.0.2/build-p210"}
+    GUEST=${P210_GUEST_OUTPUT:-"$ROOT/.cache/p210-guest/neptune-fft-streamer"}
+    BUILD_IDENTITY=${P210_BUILD_IDENTITY:-"$QEMU_CACHE/p210-runtime-build-identity.json"}
+    LIBIIO_PREFIX=$("$ROOT/scripts/build_host_libiio.sh" --print-prefix)
+    HOST_IIO_INFO="$LIBIIO_PREFIX/bin/iio_info"
+    HOST_IIO_READDEV="$LIBIIO_PREFIX/bin/iio_readdev"
+    case $(uname -s) in
+        Darwin) HOST_LIBIIO="$LIBIIO_PREFIX/lib/libiio.dylib" ;;
+        Linux) HOST_LIBIIO="$LIBIIO_PREFIX/lib/libiio.so" ;;
+        *) HOST_LIBIIO="$LIBIIO_PREFIX/lib/libiio.unsupported-host" ;;
+    esac
     if [ "$BUILD" = yes ]; then
         "$ROOT/scripts/build_p210_qemu.sh" \
             >"$OUTPUT/qemu-build.log" 2>&1
     else
-        test -x "${P210_QEMU_CACHE:-$ROOT/.cache/qemu-p210}/bin/qemu-system-arm"
+        # Hash and source-identity verification intentionally precedes every
+        # command that would execute a cached QEMU or host-libiio binary.
+        python3 "$ROOT/scripts/acceptance_gate.py" verify-build-cache \
+            --root "$ROOT" \
+            --firmwave-root "$FIRMWAVE_ROOT" \
+            --qemu "$QEMU_BINARY" \
+            --guest "$GUEST" \
+            --iio-info "$HOST_IIO_INFO" \
+            --iio-readdev "$HOST_IIO_READDEV" \
+            --libiio "$HOST_LIBIIO" \
+            --output "$BUILD_IDENTITY" \
+            >"$OUTPUT/build-cache-verify.log" 2>&1
+        "$ROOT/scripts/build_p210_qemu.sh" --verify \
+            >>"$OUTPUT/build-cache-verify.log" 2>&1
+        "$ROOT/scripts/build_host_libiio.sh" --verify \
+            >>"$OUTPUT/build-cache-verify.log" 2>&1
     fi
 
-    QEMU_CACHE=${P210_QEMU_CACHE:-"$ROOT/.cache/qemu-p210"}
-    QEMU_BINARY=${P210_QEMU_BINARY:-"$QEMU_CACHE/bin/qemu-system-arm"}
-    QEMU_BUILD_DIR=${P210_QEMU_BUILD_DIR:-"$QEMU_CACHE/src/qemu-10.0.2/build-p210"}
     test -x "$QEMU_BINARY"
     test -f "$QEMU_BUILD_DIR/compile_commands.json"
     python3 - "$QEMU_BINARY" "$QEMU_CACHE/bin/qemu-system-arm" \
@@ -99,20 +124,30 @@ python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
     --start-dir "$ROOT/tests" --label acceptance-reference \
     --summary "$OUTPUT/reference-tests.json" \
     --log "$OUTPUT/reference-tests.log" \
-    --expect-skips 0 --min-tests 66 \
+    --expect-skips 0 --min-tests 75 \
     --require-test test_acceptance_gate.AcceptanceGateTests.test_full_manifest_binds_source_qemu_tests_and_firmware_hashes \
+    --require-test test_acceptance_gate.AcceptanceGateTests.test_full_acceptance_requires_clean_twin_and_firmwave \
+    --require-test test_acceptance_gate.AcceptanceGateTests.test_hidden_index_flags_cannot_hide_source_changes \
+    --require-test test_acceptance_gate.AcceptanceGateTests.test_no_build_cache_is_bound_to_sources_and_artifacts \
     --require-test test_appliance_smoke.ApplianceSmokeTests.test_complete_appliance_can_bind_every_local_contact_and_stop \
+    --require-test test_firmwave_bundle.FirmwaveBundleTests.test_hashed_decoy_cannot_substitute_for_canonical_boot_kernel \
     --require-test test_firmwave_bundle.FirmwaveBundleTests.test_valid_bundle_binds_source_interface_and_every_artifact \
     --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_explicit_checkout_resolves_exact_release_identity \
+    --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_lock_profile_is_required_and_exact \
+    --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_managed_cache_rejects_symlinked_parent_without_touching_target \
+    --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_skip_worktree_cannot_hide_a_modified_tracked_file \
     --require-test test_runtime_contacts.ContinuousPLContactTests.test_full_50mhz_dual_65536_fft_crosses_the_nsft_wire_contract \
     --require-test test_usb_contacts.USBCompositeContactTests.test_rndis_ethernet_and_tcp_proxy_reach_iiod
 python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
     --start-dir "$FIRMWAVE_ROOT/tests" --label acceptance-firmwave \
     --summary "$OUTPUT/firmwave-tests.json" \
     --log "$OUTPUT/firmwave-tests.log" \
-    --expect-skips 0 --min-tests 21 \
+    --expect-skips 0 --min-tests 24 \
+    --require-test test_distribution.DistributionTests.test_sdist_manifest_covers_every_nonpackage_source_class \
     --require-test test_artifacts.ArtifactBoundaryTests.test_rootfs_paths_symlinks_and_uimage_crc_fail_closed \
     --require-test test_interface_manifest.RuntimeManifestTests.test_manifest_paths_are_relative_and_every_output_is_hashed \
+    --require-test test_provenance_cli.CLITests.test_source_identity_outside_git_fails_without_a_traceback \
+    --require-test test_provenance_cli.ProvenanceTests.test_hidden_index_flags_cannot_mask_worktree_changes \
     --require-test test_provenance_cli.ProvenanceTests.test_state_sha_exactly_matches_twin_acceptance_material_clean_and_dirty \
     --require-test test_source_boundaries.SourceBoundaryTests.test_no_twin_python_namespace_reference_remains
 if [ "$FIRMWARE" = yes ]; then

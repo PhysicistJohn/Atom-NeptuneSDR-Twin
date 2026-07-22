@@ -18,7 +18,16 @@ FIRMWARE_CACHE=${P210_FIRMWARE_CACHE:-"$ROOT/.cache/firmwave/firmware"}
 FFT_TOOLCHAIN=${P210_FFT_TOOLCHAIN:-"$ROOT/.cache/fft-toolchain"}
 FFT_TOOLCHAIN_SCHEMA=fft-toolchain-v2
 QEMU="$QEMU_CACHE/bin/qemu-system-arm"
+BUILD_IDENTITY=${P210_BUILD_IDENTITY:-"$QEMU_CACHE/p210-runtime-build-identity.json"}
 MAMBA="$QEMU_CACHE/tools/micromamba"
+LIBIIO_PREFIX=$("$ROOT/scripts/build_host_libiio.sh" --print-prefix)
+HOST_IIO_INFO="$LIBIIO_PREFIX/bin/iio_info"
+HOST_IIO_READDEV="$LIBIIO_PREFIX/bin/iio_readdev"
+case $(uname -s) in
+    Darwin) HOST_LIBIIO="$LIBIIO_PREFIX/lib/libiio.dylib" ;;
+    Linux) HOST_LIBIIO="$LIBIIO_PREFIX/lib/libiio.so" ;;
+    *) HOST_LIBIIO="$LIBIIO_PREFIX/lib/libiio.unsupported-host" ;;
+esac
 KERNEL="$RUNTIME/p210-kernel.bin"
 DTB="$RUNTIME/p210-devicetree.dtb"
 INITRD="$RUNTIME/qemu-fft-runtime.cpio.gz"
@@ -170,11 +179,30 @@ if [ "$BUILD" = yes ]; then
     ZIG="$ZIG_BIN" P210_GUEST_OUTPUT="$GUEST" \
         "$FIRMWAVE_ROOT/scripts/build_guest_fft.sh"
     "$ROOT/scripts/build_host_libiio.sh"
+    python3 "$ROOT/scripts/acceptance_gate.py" write-build-cache \
+        --root "$ROOT" \
+        --firmwave-root "$FIRMWAVE_ROOT" \
+        --qemu "$QEMU" \
+        --guest "$GUEST" \
+        --iio-info "$HOST_IIO_INFO" \
+        --iio-readdev "$HOST_IIO_READDEV" \
+        --libiio "$HOST_LIBIIO" \
+        --output "$BUILD_IDENTITY"
 else
     "$ROOT/scripts/build_p210_qemu.sh" --verify || \
         die 'P210 QEMU cache is stale or absent; rerun without --no-build'
     [ -x "$GUEST" ] || die "guest FFT streamer is absent: $GUEST"
     "$ROOT/scripts/build_host_libiio.sh" --verify
+    python3 "$ROOT/scripts/acceptance_gate.py" verify-build-cache \
+        --root "$ROOT" \
+        --firmwave-root "$FIRMWAVE_ROOT" \
+        --qemu "$QEMU" \
+        --guest "$GUEST" \
+        --iio-info "$HOST_IIO_INFO" \
+        --iio-readdev "$HOST_IIO_READDEV" \
+        --libiio "$HOST_LIBIIO" \
+        --output "$BUILD_IDENTITY" || \
+        die 'P210 build cache is not bound to current Twin/Firmwave source; rerun without --no-build'
 fi
 
 python3 "$FIRMWAVE_ROOT/scripts/fetch_firmware.py" \

@@ -26,11 +26,18 @@ python3 scripts/acceptance_gate.py test-suite \
   --label source-reference \
   --summary "$OUTPUT/reference-tests.json" \
   --expect-skips 0 \
-  --min-tests 66 \
+  --min-tests 75 \
   --require-test test_acceptance_gate.AcceptanceGateTests.test_full_manifest_binds_source_qemu_tests_and_firmware_hashes \
+  --require-test test_acceptance_gate.AcceptanceGateTests.test_full_acceptance_requires_clean_twin_and_firmwave \
+  --require-test test_acceptance_gate.AcceptanceGateTests.test_hidden_index_flags_cannot_hide_source_changes \
+  --require-test test_acceptance_gate.AcceptanceGateTests.test_no_build_cache_is_bound_to_sources_and_artifacts \
   --require-test test_appliance_smoke.ApplianceSmokeTests.test_complete_appliance_can_bind_every_local_contact_and_stop \
+  --require-test test_firmwave_bundle.FirmwaveBundleTests.test_hashed_decoy_cannot_substitute_for_canonical_boot_kernel \
   --require-test test_firmwave_bundle.FirmwaveBundleTests.test_valid_bundle_binds_source_interface_and_every_artifact \
   --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_explicit_checkout_resolves_exact_release_identity \
+  --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_lock_profile_is_required_and_exact \
+  --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_managed_cache_rejects_symlinked_parent_without_touching_target \
+  --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_skip_worktree_cannot_hide_a_modified_tracked_file \
   --require-test test_runtime_contacts.ContinuousPLContactTests.test_full_50mhz_dual_65536_fft_crosses_the_nsft_wire_contract \
   --require-test test_usb_contacts.USBCompositeContactTests.test_rndis_ethernet_and_tcp_proxy_reach_iiod
 python3 scripts/acceptance_gate.py test-suite \
@@ -38,9 +45,12 @@ python3 scripts/acceptance_gate.py test-suite \
   --label source-firmwave \
   --summary "$OUTPUT/firmwave-tests.json" \
   --expect-skips 0 \
-  --min-tests 21 \
+  --min-tests 24 \
+  --require-test test_distribution.DistributionTests.test_sdist_manifest_covers_every_nonpackage_source_class \
   --require-test test_artifacts.ArtifactBoundaryTests.test_rootfs_paths_symlinks_and_uimage_crc_fail_closed \
   --require-test test_interface_manifest.RuntimeManifestTests.test_manifest_paths_are_relative_and_every_output_is_hashed \
+  --require-test test_provenance_cli.CLITests.test_source_identity_outside_git_fails_without_a_traceback \
+  --require-test test_provenance_cli.ProvenanceTests.test_hidden_index_flags_cannot_mask_worktree_changes \
   --require-test test_provenance_cli.ProvenanceTests.test_state_sha_exactly_matches_twin_acceptance_material_clean_and_dirty \
   --require-test test_source_boundaries.SourceBoundaryTests.test_no_twin_python_namespace_reference_remains
 python3 scripts/acceptance_gate.py test-suite \

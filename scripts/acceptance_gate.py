@@ -24,6 +24,7 @@ import unittest
 
 
 SCHEMA = "atom-neptune-acceptance-v1"
+BUILD_CACHE_SCHEMA = "atom-neptune-build-cache-v1"
 PASS_MARKER = "P210_RUNTIME PASS"
 _BUILD_SKIP = "set P210_QEMU_BUILD_DIR to a configured QEMU 10.0.2 build"
 _BINARY_SKIP = "set P210_QEMU_BINARY to an integrated P210 QEMU binary"
@@ -85,6 +86,21 @@ def _source_state(root: Path) -> Dict[str, Any]:
     untracked_raw = _run_bytes(
         ("git", "ls-files", "--others", "--exclude-standard", "-z"), root
     )
+    index_raw = _run_bytes(("git", "ls-files", "-v", "-z", "--"), root)
+    hidden_index_flags: List[Dict[str, str]] = []
+    for encoded in index_raw.split(b"\0"):
+        if not encoded:
+            continue
+        if len(encoded) < 3 or encoded[1:2] != b" ":
+            raise ValueError("git ls-files returned a malformed index entry")
+        tag = chr(encoded[0])
+        # `git diff` and `git status` deliberately trust these index flags.
+        # Treat sparse/skip-worktree (`S`) and assume-unchanged (lowercase)
+        # entries as provenance violations so they cannot hide modified bytes.
+        if tag == "S" or tag.islower():
+            hidden_index_flags.append(
+                {"path": os.fsdecode(encoded[2:]), "tag": tag}
+            )
     untracked: List[Dict[str, Any]] = []
     for encoded in untracked_raw.split(b"\0"):
         if not encoded:
@@ -107,13 +123,19 @@ def _source_state(root: Path) -> Dict[str, Any]:
         "branch": branch,
         "tracked_diff_sha256": _sha256_bytes(diff),
         "tracked_diff_bytes": len(diff),
+        "hidden_index_flags": hidden_index_flags,
         "untracked": untracked,
         "submodule_status_sha256": _sha256_bytes(submodules),
         "submodule_status": submodules.decode("utf-8", "replace").splitlines(),
     }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     material["state_sha256"] = _sha256_bytes(encoded)
-    material["clean"] = not diff and not untracked and not submodules.strip()
+    material["clean"] = (
+        not diff
+        and not hidden_index_flags
+        and not untracked
+        and not submodules.strip()
+    )
     return material
 
 
@@ -124,6 +146,24 @@ def _named_source_state(root: Path, repository: str) -> Dict[str, Any]:
         "root": str(root.resolve()),
         **state,
     }
+
+
+def _require_clean_sources(sources: Dict[str, Dict[str, Any]]) -> None:
+    labels = {"twin": "Twin", "firmwave": "Firmwave"}
+    for name in ("twin", "firmwave"):
+        source = sources[name]
+        if not source.get("clean"):
+            hidden = source.get("hidden_index_flags")
+            detail = ""
+            if hidden:
+                detail = "; hidden Git index flags: %s" % ", ".join(
+                    "%s:%s" % (entry["tag"], entry["path"])
+                    for entry in hidden
+                )
+            raise ValueError(
+                "%s repository must be clean for full acceptance%s"
+                % (labels[name], detail)
+            )
 
 
 class _Tee:
@@ -307,9 +347,15 @@ def _start(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     firmwave_root = Path(args.firmwave_root).resolve()
     output = Path(args.output).resolve()
-    output.mkdir(parents=True, exist_ok=False)
     twin_source = _named_source_state(root, "Atom-NeptuneSDR-Twin")
     firmwave_source = _named_source_state(firmwave_root, "Atom-NeptuneSDR_Firmwave")
+    sources = {
+        "twin": twin_source,
+        "firmwave": firmwave_source,
+    }
+    if args.mode == "full":
+        _require_clean_sources(sources)
+    output.mkdir(parents=True, exist_ok=False)
     payload = {
         "schema": SCHEMA,
         "kind": "acceptance-run-state",
@@ -320,10 +366,7 @@ def _start(args: argparse.Namespace) -> int:
         # Keep ``source`` as the Twin alias for v1 manifest consumers while
         # making the two-repository execution boundary explicit.
         "source": twin_source,
-        "sources": {
-            "twin": twin_source,
-            "firmwave": firmwave_source,
-        },
+        "sources": sources,
     }
     _write_json(output / "run-state.json", payload)
     return 0
@@ -349,6 +392,100 @@ def _artifact(path: Path, base: Optional[Path] = None) -> Dict[str, Any]:
         "bytes": resolved.stat().st_size,
         "sha256": _sha256_file(resolved),
     }
+
+
+def _build_cache_inputs(args: argparse.Namespace) -> Dict[str, Any]:
+    sources = {
+        "twin": _named_source_state(Path(args.root), "Atom-NeptuneSDR-Twin"),
+        "firmwave": _named_source_state(
+            Path(args.firmwave_root), "Atom-NeptuneSDR_Firmwave"
+        ),
+    }
+    artifact_paths = {
+        "qemu": Path(args.qemu).resolve(),
+        "guest_fft_streamer": Path(args.guest).resolve(),
+        "host_iio_info": Path(args.iio_info).resolve(),
+        "host_iio_readdev": Path(args.iio_readdev).resolve(),
+        "host_libiio": Path(args.libiio).resolve(),
+    }
+    executable_artifacts = (
+        "qemu",
+        "guest_fft_streamer",
+        "host_iio_info",
+        "host_iio_readdev",
+    )
+    for label in executable_artifacts:
+        path = artifact_paths[label]
+        if not path.is_file() or not os.access(str(path), os.X_OK):
+            raise ValueError("%s cache artifact is not executable: %s" % (label, path))
+    if not artifact_paths["host_libiio"].is_file():
+        raise ValueError(
+            "host_libiio cache artifact is not a regular file: %s"
+            % artifact_paths["host_libiio"]
+        )
+    return {
+        "sources": sources,
+        "artifacts": {
+            label: _artifact(path) for label, path in artifact_paths.items()
+        },
+    }
+
+
+def _write_build_cache(args: argparse.Namespace) -> int:
+    output = Path(args.output).resolve()
+    inputs = _build_cache_inputs(args)
+    payload = {
+        "schema": BUILD_CACHE_SCHEMA,
+        "kind": "p210-runtime-build-cache-binding",
+        "created_at": _utc_now(),
+        **inputs,
+    }
+    _write_json(output, payload)
+    print("P210_BUILD_CACHE BOUND path=%s" % output)
+    return 0
+
+
+def _verify_build_cache(args: argparse.Namespace) -> int:
+    output = Path(args.output).resolve()
+    recorded = json.loads(output.read_text(encoding="utf-8"))
+    if (
+        recorded.get("schema") != BUILD_CACHE_SCHEMA
+        or recorded.get("kind") != "p210-runtime-build-cache-binding"
+    ):
+        raise ValueError("P210 build cache binding has the wrong schema or kind")
+
+    current = _build_cache_inputs(args)
+    recorded_sources = recorded.get("sources")
+    recorded_artifacts = recorded.get("artifacts")
+    if not isinstance(recorded_sources, dict) or not isinstance(
+        recorded_artifacts, dict
+    ):
+        raise ValueError("P210 build cache binding is incomplete")
+
+    for name, source in current["sources"].items():
+        cached = recorded_sources.get(name)
+        if not isinstance(cached, dict):
+            raise ValueError("P210 build cache has no %s source identity" % name)
+        for field in ("repository", "commit", "state_sha256", "clean"):
+            if cached.get(field) != source[field]:
+                raise ValueError(
+                    "P210 build cache %s source %s does not match current source"
+                    % (name, field)
+                )
+
+    for name, artifact in current["artifacts"].items():
+        cached = recorded_artifacts.get(name)
+        if not isinstance(cached, dict):
+            raise ValueError("P210 build cache has no %s artifact identity" % name)
+        for field in ("bytes", "sha256"):
+            if cached.get(field) != artifact[field]:
+                raise ValueError(
+                    "P210 build cache %s artifact %s does not match current artifact"
+                    % (name, field)
+                )
+
+    print("P210_BUILD_CACHE VERIFIED path=%s" % output)
+    return 0
 
 
 def _verify_runtime_contract(
@@ -501,6 +638,7 @@ def _finish_full(args: argparse.Namespace) -> int:
             raise ValueError(
                 "%s repository source state changed during acceptance" % name.capitalize()
             )
+    _require_clean_sources(current_sources)
 
     reference_summary = _load_passing_summary(
         Path(args.reference_summary), "reference"
@@ -657,6 +795,21 @@ def _parser() -> argparse.ArgumentParser:
     tests.add_argument("--min-tests", type=int, default=1)
     tests.add_argument("--require-test", action="append", default=[])
     tests.set_defaults(function=_test_suite)
+
+    for command, function in (
+        ("write-build-cache", _write_build_cache),
+        ("verify-build-cache", _verify_build_cache),
+    ):
+        cache = subparsers.add_parser(command)
+        cache.add_argument("--root", required=True)
+        cache.add_argument("--firmwave-root", required=True)
+        cache.add_argument("--qemu", required=True)
+        cache.add_argument("--guest", required=True)
+        cache.add_argument("--iio-info", required=True)
+        cache.add_argument("--iio-readdev", required=True)
+        cache.add_argument("--libiio", required=True)
+        cache.add_argument("--output", required=True)
+        cache.set_defaults(function=function)
 
     start = subparsers.add_parser("start")
     start.add_argument("--root", required=True)

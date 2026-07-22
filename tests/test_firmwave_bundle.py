@@ -74,6 +74,13 @@ class BundleFixture:
                     "schema": verifier.INTERFACE_SCHEMA,
                     "profile": "qemu-development",
                     "flashable": False,
+                    "produced_artifacts": {
+                        "runtime_manifest_schema": verifier.RUNTIME_SCHEMA,
+                        **{
+                            name: relative
+                            for name, (relative, _payload, _role) in self.ARTIFACTS.items()
+                        },
+                    },
                 },
                 sort_keys=True,
             )
@@ -212,6 +219,26 @@ class FirmwaveBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "artifact hash/size mismatch: kernel"):
             self.fixture.verify()
 
+    def test_hashed_decoy_cannot_substitute_for_canonical_boot_kernel(self) -> None:
+        canonical = self.fixture.runtime / BundleFixture.ARTIFACTS["kernel"][0]
+        decoy = self.fixture.runtime / "decoy-kernel.bin"
+        decoy.write_bytes(b"innocent decoy kernel\n")
+        self.assertNotEqual(canonical.read_bytes(), decoy.read_bytes())
+        kernel_record = self.fixture.manifest["generated_artifacts"]["kernel"]
+        kernel_record.update(
+            {
+                "path": decoy.name,
+                "bytes": decoy.stat().st_size,
+                "sha256": _sha256(decoy),
+            }
+        )
+        self.fixture.write_manifest()
+
+        with self.assertRaisesRegex(
+            ValueError, "kernel path does not match the locked interface"
+        ):
+            self.fixture.verify()
+
     def test_wrong_profile_flashable_or_interface_hash_is_rejected(self) -> None:
         original = copy.deepcopy(self.fixture.manifest)
         cases = (
@@ -240,7 +267,7 @@ class FirmwaveBundleTests(unittest.TestCase):
 
     def test_duplicate_artifact_path_is_rejected(self) -> None:
         generated = self.fixture.manifest["generated_artifacts"]
-        generated["rootfs"] = copy.deepcopy(generated["kernel"])
+        generated["kernel_copy"] = copy.deepcopy(generated["kernel"])
         self.fixture.write_manifest()
 
         with self.assertRaisesRegex(ValueError, "generated artifacts reuse path"):

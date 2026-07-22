@@ -51,6 +51,212 @@ def _init_repository(root: Path, *, ignored: str = "") -> None:
 
 
 class AcceptanceGateTests(unittest.TestCase):
+    def test_hidden_index_flags_cannot_hide_source_changes(self) -> None:
+        cases = (
+            ("--skip-worktree", "S"),
+            ("--assume-unchanged", "h"),
+        )
+        for option, expected_tag in cases:
+            with self.subTest(option=option), tempfile.TemporaryDirectory(
+                prefix="gate-hidden-index-"
+            ) as directory:
+                root = Path(directory) / "repo"
+                firmwave_root = Path(directory) / "firmwave"
+                _init_repository(root, ignored=".evidence/\n")
+                _init_repository(firmwave_root)
+
+                baseline_output = root / ".evidence" / "baseline"
+                baseline = _run(
+                    "start",
+                    "--root", str(root),
+                    "--firmwave-root", str(firmwave_root),
+                    "--output", str(baseline_output),
+                    "--run-id", "baseline",
+                    "--mode", "source",
+                    cwd=root,
+                )
+                self.assertEqual(baseline.returncode, 0, baseline.stdout)
+                baseline_state = json.loads(
+                    (baseline_output / "run-state.json").read_text(encoding="utf-8")
+                )["sources"]["twin"]
+                self.assertTrue(baseline_state["clean"])
+
+                subprocess.run(
+                    ("git", "update-index", option, "source.txt"),
+                    cwd=root,
+                    check=True,
+                )
+                (root / "source.txt").write_text(
+                    "bytes hidden from ordinary Git status\n", encoding="utf-8"
+                )
+                porcelain = subprocess.check_output(
+                    ("git", "status", "--porcelain", "--untracked-files=no"),
+                    cwd=root,
+                    text=True,
+                )
+                self.assertEqual(porcelain, "")
+
+                flagged_output = root / ".evidence" / "flagged"
+                flagged = _run(
+                    "start",
+                    "--root", str(root),
+                    "--firmwave-root", str(firmwave_root),
+                    "--output", str(flagged_output),
+                    "--run-id", "flagged",
+                    "--mode", "source",
+                    cwd=root,
+                )
+                self.assertEqual(flagged.returncode, 0, flagged.stdout)
+                flagged_state = json.loads(
+                    (flagged_output / "run-state.json").read_text(encoding="utf-8")
+                )["sources"]["twin"]
+                self.assertFalse(flagged_state["clean"])
+                self.assertEqual(
+                    flagged_state["hidden_index_flags"],
+                    [{"path": "source.txt", "tag": expected_tag}],
+                )
+                self.assertNotEqual(
+                    flagged_state["state_sha256"], baseline_state["state_sha256"]
+                )
+
+                full = _run(
+                    "start",
+                    "--root", str(root),
+                    "--firmwave-root", str(firmwave_root),
+                    "--output", str(root / ".evidence" / "full"),
+                    "--run-id", "full",
+                    "--mode", "full",
+                    cwd=root,
+                )
+                self.assertNotEqual(full.returncode, 0, full.stdout)
+                self.assertIn("hidden Git index flags", full.stdout)
+
+    def test_full_acceptance_requires_clean_twin_and_firmwave(self) -> None:
+        for dirty_repository, expected in (
+            ("twin", "Twin repository must be clean for full acceptance"),
+            ("firmwave", "Firmwave repository must be clean for full acceptance"),
+        ):
+            with self.subTest(repository=dirty_repository), tempfile.TemporaryDirectory(
+                prefix="gate-clean-source-"
+            ) as directory:
+                root = Path(directory) / "repo"
+                firmwave_root = Path(directory) / "firmwave"
+                _init_repository(root)
+                _init_repository(firmwave_root)
+                dirty_root = root if dirty_repository == "twin" else firmwave_root
+                (dirty_root / "source.txt").write_text("uncommitted source\n")
+
+                result = _run(
+                    "start",
+                    "--root", str(root),
+                    "--firmwave-root", str(firmwave_root),
+                    "--output", str(Path(directory) / "evidence"),
+                    "--run-id", "dirty",
+                    "--mode", "full",
+                    cwd=root,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(expected, result.stdout)
+                self.assertFalse((Path(directory) / "evidence").exists())
+
+    def test_no_build_cache_is_bound_to_sources_and_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-build-cache-") as directory:
+            temporary = Path(directory)
+            root = temporary / "repo"
+            firmwave_root = temporary / "firmwave"
+            _init_repository(root)
+            _init_repository(firmwave_root)
+            qemu = temporary / "qemu-system-arm"
+            guest = temporary / "neptune-fft-streamer"
+            iio_info = temporary / "iio_info"
+            iio_readdev = temporary / "iio_readdev"
+            libiio = temporary / "libiio.dylib"
+            qemu.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            guest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            iio_info.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            iio_readdev.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            libiio.write_bytes(b"pinned host libiio\n")
+            for executable in (qemu, guest, iio_info, iio_readdev):
+                executable.chmod(0o755)
+            binding = temporary / "p210-runtime-build-identity.json"
+            common = (
+                "--root", str(root),
+                "--firmwave-root", str(firmwave_root),
+                "--qemu", str(qemu),
+                "--guest", str(guest),
+                "--iio-info", str(iio_info),
+                "--iio-readdev", str(iio_readdev),
+                "--libiio", str(libiio),
+                "--output", str(binding),
+            )
+
+            written = _run("write-build-cache", *common)
+            self.assertEqual(written.returncode, 0, written.stdout)
+            payload = json.loads(binding.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema"], "atom-neptune-build-cache-v1")
+            self.assertEqual(set(payload["sources"]), {"twin", "firmwave"})
+            self.assertEqual(
+                set(payload["artifacts"]),
+                {
+                    "qemu",
+                    "guest_fft_streamer",
+                    "host_iio_info",
+                    "host_iio_readdev",
+                    "host_libiio",
+                },
+            )
+
+            verified = _run("verify-build-cache", *common)
+            self.assertEqual(verified.returncode, 0, verified.stdout)
+
+            guest.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+            rejected_artifact = _run("verify-build-cache", *common)
+            self.assertNotEqual(
+                rejected_artifact.returncode, 0, rejected_artifact.stdout
+            )
+            self.assertIn("guest_fft_streamer artifact", rejected_artifact.stdout)
+            guest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+            libiio.write_bytes(b"tampered host libiio\n")
+            rejected_libiio = _run("verify-build-cache", *common)
+            self.assertNotEqual(
+                rejected_libiio.returncode, 0, rejected_libiio.stdout
+            )
+            self.assertIn("host_libiio artifact", rejected_libiio.stdout)
+            libiio.write_bytes(b"pinned host libiio\n")
+
+            (root / "source.txt").write_text("changed Twin source\n", encoding="utf-8")
+            rejected_twin = _run("verify-build-cache", *common)
+            self.assertNotEqual(rejected_twin.returncode, 0, rejected_twin.stdout)
+            self.assertIn("twin source", rejected_twin.stdout)
+            (root / "source.txt").write_text("tested source\n", encoding="utf-8")
+
+            (firmwave_root / "source.txt").write_text(
+                "changed Firmwave source\n", encoding="utf-8"
+            )
+            rejected_firmwave = _run("verify-build-cache", *common)
+            self.assertNotEqual(
+                rejected_firmwave.returncode, 0, rejected_firmwave.stdout
+            )
+            self.assertIn("firmwave source", rejected_firmwave.stdout)
+
+            launcher = (ROOT / "scripts" / "run_p210_firmware.sh").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("write-build-cache", launcher)
+            self.assertIn("verify-build-cache", launcher)
+            full_gate = (ROOT / "scripts" / "accept_virtual_twin.sh").read_text(
+                encoding="utf-8"
+            )
+            cache_verification = full_gate.index("verify-build-cache")
+            self.assertLess(
+                cache_verification,
+                full_gate.index('build_p210_qemu.sh" --verify'),
+            )
+            self.assertLess(
+                cache_verification, full_gate.index('"$QEMU_BINARY" --version')
+            )
+
     def test_skip_count_and_exact_reason_are_part_of_source_gate(self) -> None:
         with tempfile.TemporaryDirectory(prefix="gate-skips-") as directory:
             root = Path(directory)
