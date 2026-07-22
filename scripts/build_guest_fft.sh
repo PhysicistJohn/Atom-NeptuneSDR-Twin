@@ -4,7 +4,16 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-ZIG=${ZIG:-"$ROOT/.cache/fft-toolchain/bin/zig"}
+DEFAULT_TOOLCHAIN="$ROOT/.cache/fft-toolchain"
+if [ -z "${ZIG:-}" ]; then
+    . "$ROOT/scripts/cache_relocation.sh"
+    # A conda prefix contains absolute shebangs, install metadata, and dynamic
+    # loader paths.  Fail closed after a move instead of trying to execute it.
+    guard_relocatable_cache "$DEFAULT_TOOLCHAIN" fft-toolchain-v2 \
+        build_guest_fft.sh .mambarc bin compiler_compat conda-meta doc etc \
+        include lib libexec man share ssl var
+    ZIG="$DEFAULT_TOOLCHAIN/bin/zig"
+fi
 OUTPUT=${P210_GUEST_OUTPUT:-"$ROOT/.cache/p210-guest/neptune-fft-streamer"}
 EXPECTED_ZIG=0.14.1
 

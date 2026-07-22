@@ -4,6 +4,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$ROOT/scripts/cache_relocation.sh"
 CACHE=${P210_QEMU_CACHE:-"$ROOT/.cache/qemu-p210"}
 TOOLS="$CACHE/tools"
 DOWNLOADS="$CACHE/downloads"
@@ -11,6 +12,7 @@ ENV="$CACHE/env"
 SOURCE="$CACHE/src/qemu-10.0.2"
 BUILD="$SOURCE/build-p210"
 OUTPUT="$CACHE/bin/qemu-system-arm"
+OUTPUT_LINK="../src/qemu-10.0.2/build-p210/qemu-system-arm"
 
 QEMU_VERSION=10.0.2
 QEMU_ARCHIVE="qemu-${QEMU_VERSION}.tar.xz"
@@ -22,6 +24,19 @@ MICROMAMBA_URL="https://github.com/mamba-org/micromamba-releases/releases/downlo
 MICROMAMBA="$TOOLS/micromamba"
 PATCH="$ROOT/qemu/patches/0001-p210-zynq-devices.patch"
 DEVICE_TREE="$ROOT/cosim/qemu-10.0.2"
+MODE=build
+
+case ${1:-} in
+    '') ;;
+    --verify) MODE=verify ;;
+    -h|--help)
+        printf '%s\n' 'Usage: build_p210_qemu.sh [--verify]'
+        printf '%s\n' 'Build, or verify without rebuilding, the pinned P210 QEMU.'
+        exit 0
+        ;;
+    *) printf '%s\n' 'Usage: build_p210_qemu.sh [--verify]' >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { printf '%s\n' 'Usage: build_p210_qemu.sh [--verify]' >&2; exit 2; }
 
 if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
     printf '%s\n' \
@@ -59,10 +74,31 @@ download_locked() {
 
 verify_binary() {
     [ -x "$OUTPUT" ] || return 1
+    [ -L "$OUTPUT" ] || return 1
+    [ "$(readlink "$OUTPUT")" = "$OUTPUT_LINK" ] || return 1
     "$OUTPUT" --version 2>/dev/null | grep -q 'QEMU emulator version 10\.0\.2' || return 1
     "$OUTPUT" -machine xilinx-zynq-a9,help 2>&1 |
         grep -q 'p210=<bool>.*Enable HAMGEEK P210 SDR devices' || return 1
 }
+
+guard_relocatable_cache "$CACHE" qemu-p210-v1 build_p210_qemu.sh \
+    env mamba-root src/qemu-10.0.2/build-p210 bin/qemu-system-arm
+
+if [ "$MODE" = verify ]; then
+    if [ "$CACHE_RELOCATION_ACTION" = invalidated ]; then
+        printf '%s\n' \
+            'build_p210_qemu.sh: the cache moved or predated relocation tracking; rebuild without --verify' >&2
+        exit 1
+    fi
+    if ! verify_binary; then
+        printf '%s\n' \
+            'build_p210_qemu.sh: cached P210 QEMU failed verification; rebuild without --verify' >&2
+        exit 1
+    fi
+    printf 'qemu=%s\n' "$OUTPUT"
+    printf '%s\n' 'cache=verified'
+    exit 0
+fi
 
 mkdir -p "$TOOLS" "$DOWNLOADS" "$CACHE/bin"
 download_locked "$MICROMAMBA_URL" "$MICROMAMBA" "$MICROMAMBA_SHA256"
@@ -85,6 +121,14 @@ extract_source() {
     rm -rf "$SOURCE"
     mkdir -p "$CACHE/src"
     tar -C "$CACHE/src" -xf "$ARCHIVE"
+}
+
+copy_if_changed() {
+    source_file=$1
+    destination_file=$2
+    if [ ! -f "$destination_file" ] || ! cmp -s "$source_file" "$destination_file"; then
+        cp "$source_file" "$destination_file"
+    fi
 }
 if [ ! -f "$SOURCE/VERSION" ]; then
     extract_source
@@ -119,11 +163,11 @@ printf '%s\n' "$PATCH_SHA256" >"$PATCH_STAMP"
 
 # Device sources live in the repository so editing them forces the next Ninja
 # invocation to rebuild the corresponding objects without re-extracting QEMU.
-cp "$DEVICE_TREE/hw/misc/p210_sdr.c" "$SOURCE/hw/misc/p210_sdr.c"
-cp "$DEVICE_TREE/hw/misc/p210_fft.c" "$SOURCE/hw/misc/p210_fft.c"
-cp "$DEVICE_TREE/hw/ssi/p210_ad9361.c" "$SOURCE/hw/ssi/p210_ad9361.c"
-cp "$DEVICE_TREE/include/hw/misc/p210_sdr.h" "$SOURCE/include/hw/misc/p210_sdr.h"
-cp "$DEVICE_TREE/include/hw/misc/p210_fft.h" "$SOURCE/include/hw/misc/p210_fft.h"
+copy_if_changed "$DEVICE_TREE/hw/misc/p210_sdr.c" "$SOURCE/hw/misc/p210_sdr.c"
+copy_if_changed "$DEVICE_TREE/hw/misc/p210_fft.c" "$SOURCE/hw/misc/p210_fft.c"
+copy_if_changed "$DEVICE_TREE/hw/ssi/p210_ad9361.c" "$SOURCE/hw/ssi/p210_ad9361.c"
+copy_if_changed "$DEVICE_TREE/include/hw/misc/p210_sdr.h" "$SOURCE/include/hw/misc/p210_sdr.h"
+copy_if_changed "$DEVICE_TREE/include/hw/misc/p210_fft.h" "$SOURCE/include/hw/misc/p210_fft.h"
 
 export PATH="$ENV/bin:$PATH"
 export PKG_CONFIG_PATH="$ENV/lib/pkgconfig:$ENV/share/pkgconfig"
@@ -155,7 +199,10 @@ if [ ! -f "$BUILD/build.ninja" ]; then
 fi
 
 ninja -C "$BUILD" qemu-system-arm
-ln -sfn "$BUILD/qemu-system-arm" "$OUTPUT"
+# The public entry point must survive moving the repository and its .cache as
+# one directory tree.  Meson and conda state are guarded above because they do
+# embed absolute prefixes; this link does not.
+ln -sfn "$OUTPUT_LINK" "$OUTPUT"
 
 if ! verify_binary; then
     printf '%s\n' 'build_p210_qemu.sh: built binary failed P210 machine verification' >&2

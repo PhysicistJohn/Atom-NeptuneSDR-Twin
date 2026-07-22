@@ -7,10 +7,12 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$ROOT/scripts/cache_relocation.sh"
 QEMU_CACHE=${P210_QEMU_CACHE:-"$ROOT/.cache/qemu-p210"}
 RUNTIME=${P210_RUNTIME_OUTPUT:-"$ROOT/.cache/p210-runtime"}
 GUEST=${P210_GUEST_OUTPUT:-"$ROOT/.cache/p210-guest/neptune-fft-streamer"}
 FFT_TOOLCHAIN=${P210_FFT_TOOLCHAIN:-"$ROOT/.cache/fft-toolchain"}
+FFT_TOOLCHAIN_SCHEMA=fft-toolchain-v2
 QEMU="$QEMU_CACHE/bin/qemu-system-arm"
 MAMBA="$QEMU_CACHE/tools/micromamba"
 KERNEL="$RUNTIME/p210-kernel.bin"
@@ -138,6 +140,9 @@ if [ "$BUILD" = yes ]; then
     if [ -n "${ZIG:-}" ]; then
         ZIG_BIN=$ZIG
     else
+        guard_relocatable_cache "$FFT_TOOLCHAIN" "$FFT_TOOLCHAIN_SCHEMA" \
+            run_p210_firmware.sh .mambarc bin compiler_compat conda-meta doc \
+            etc include lib libexec man share ssl var
         ZIG_BIN="$FFT_TOOLCHAIN/bin/zig"
         if [ ! -x "$ZIG_BIN" ] || [ "$($ZIG_BIN version 2>/dev/null || true)" != 0.14.1 ]; then
             [ -x "$MAMBA" ] || die 'pinned micromamba was not provisioned by the QEMU build'
@@ -145,19 +150,24 @@ if [ "$BUILD" = yes ]; then
                 MAMBA_ROOT_PREFIX="$QEMU_CACHE/mamba-root" "$MAMBA" install -y \
                     -p "$FFT_TOOLCHAIN" -c conda-forge --strict-channel-priority \
                     zig=0.14.1
-            elif [ -e "$FFT_TOOLCHAIN" ]; then
+            elif ! cache_has_only_relocation_stamp "$FFT_TOOLCHAIN"; then
                 die "FFT toolchain path exists but is not a conda environment: $FFT_TOOLCHAIN"
             else
+                rm -f "$FFT_TOOLCHAIN/.neptune-cache-location"
+                rmdir "$FFT_TOOLCHAIN" || \
+                    die "cannot prepare empty FFT toolchain prefix: $FFT_TOOLCHAIN"
                 MAMBA_ROOT_PREFIX="$QEMU_CACHE/mamba-root" "$MAMBA" create -y \
                     -p "$FFT_TOOLCHAIN" -c conda-forge --strict-channel-priority \
                     zig=0.14.1
+                stamp_relocatable_cache "$FFT_TOOLCHAIN" "$FFT_TOOLCHAIN_SCHEMA"
             fi
         fi
     fi
     ZIG="$ZIG_BIN" P210_GUEST_OUTPUT="$GUEST" "$ROOT/scripts/build_guest_fft.sh"
     "$ROOT/scripts/build_host_libiio.sh"
 else
-    [ -x "$QEMU" ] || die "P210 QEMU is absent: $QEMU"
+    "$ROOT/scripts/build_p210_qemu.sh" --verify || \
+        die 'P210 QEMU cache is stale or absent; rerun without --no-build'
     [ -x "$GUEST" ] || die "guest FFT streamer is absent: $GUEST"
     "$ROOT/scripts/build_host_libiio.sh" --verify
 fi

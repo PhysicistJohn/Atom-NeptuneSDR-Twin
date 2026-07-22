@@ -9,7 +9,7 @@ against board-visible AD9361 SPI, CF-AXI ADC/DDS, four-entry AXI-DMAC, dual
 Cortex-A9, GEM, DDR, interrupt, and proposed PL FFT contacts. The released ARM
 `iiod` and official host libiio operate across that machine; a second reference
 layer supplies deterministic continuous RF/PL behavior, a standard USB/IP
-composite device, contract monitors, and golden vectors.
+composite device, executable contact-composition checks, and golden vectors.
 
 The tested wideband path is real software integration, not a zero-filled or
 userspace-only demo: Linux IIO captures nonzero 2x2 IQ through the ADI drivers
@@ -83,8 +83,12 @@ scripts/accept_virtual_twin.sh
 ```
 
 It exits with `NEPTUNE_TWIN_ACCEPTANCE PASS` and retains its reports below
-`.cache/acceptance/`. `--no-build` reuses the compiled toolchains;
-`--reference-only` omits only the final firmware VM.
+`.cache/acceptance/runs/`. A passing full run contains a machine-readable
+manifest bound to the exact Git source state, QEMU binary, compile database,
+test set, firmware log, and runtime artifact hashes; no skipped test is allowed.
+`--no-build` reuses verified compiled toolchains. `--source-only` runs the fast
+gate with its exact, named set of 15 live-QEMU skips (`--reference-only` remains
+a deprecated alias).
 
 For a persistent development target, leave the VM running in one terminal:
 
@@ -207,7 +211,7 @@ contact without claiming an emulated electrical PHY.
 
 | Surface | Implemented behavior | Exactness status |
 | --- | --- | --- |
-| Contract system | Typed contacts, assume/guarantee composition, refinement, evidence checks, runtime monitors | Executable and tested |
+| Contract system | Typed contacts, assume/guarantee composition, domain entailment, fail-closed seam validation, and per-guarantee evidence metadata | Executable and tested |
 | Zynq-7020 | QEMU ARMv7 execution, two Cortex-A9s, 512 MiB DDR, SLCR secondary release, GEM and P210 PL address map; plus a fast Python contract model | Functional/instruction accurate enough for the pinned Linux path; not cycle/timing accurate |
 | AD9361 | QEMU SPI identity, calibration side effects and clock/status contacts consumed by the real ADI 4.14 driver; Python ENSM/RF control oracle | Real-driver E3 integration; silicon/RF edge cases remain capture-driven |
 | RF/sample plane | Real guest IIO/ADI buffer path with deterministic phase-continuous IQ16LE 2x2 tones and four-entry DMAC; richer Python noise/gain/loopback model | Digital packing/DMA proven; analog impairments require E5 calibration |

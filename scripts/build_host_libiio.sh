@@ -8,6 +8,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$ROOT/scripts/cache_relocation.sh"
 CACHE=${HOST_LIBIIO_CACHE:-"$ROOT/.cache/host-libiio-v0.26"}
 SOURCE="$CACHE/source"
 BUILD="$CACHE/build"
@@ -53,6 +54,15 @@ case ${1:-} in
 esac
 [ "$#" -le 1 ] || { usage >&2; exit 2; }
 
+# CMake caches, installed pkg-config files, dylib install names, and rpaths all
+# carry the absolute build/install prefix.  The content-addressed git source is
+# safe to retain and avoids an unnecessary network fetch after relocation.
+guard_relocatable_cache "$CACHE" "host-libiio-v0.26-v1|prefix=$PREFIX" \
+    build_host_libiio.sh build install
+if [ "$mode" = verify ] && [ "$CACHE_RELOCATION_ACTION" != unchanged ]; then
+    die 'the cache moved or predated relocation tracking; rebuild without --verify'
+fi
+
 case "$PREFIX" in
     /|/System|/System/*|/Library|/Library/*|/usr|/usr/*|/opt|/opt/*)
         die "refusing a system installation prefix: $PREFIX"
@@ -72,16 +82,40 @@ case $(uname -s) in
         ;;
 esac
 
-find_cmake() {
+select_cmake() {
+    CMAKE_MODE=executable
     if [ -n "${CMAKE:-}" ]; then
         [ -x "$CMAKE" ] || die "CMAKE is not executable: $CMAKE"
-        printf '%s\n' "$CMAKE"
+        "$CMAKE" --version >/dev/null 2>&1 || die "CMAKE cannot execute: $CMAKE"
+        CMAKE_BIN=$CMAKE
     elif command -v cmake >/dev/null 2>&1; then
-        command -v cmake
-    elif [ -x "$ROOT/.venv/bin/cmake" ]; then
-        printf '%s\n' "$ROOT/.venv/bin/cmake"
+        candidate=$(command -v cmake)
+        if "$candidate" --version >/dev/null 2>&1; then
+            CMAKE_BIN=$candidate
+        elif [ -x "$ROOT/.venv/bin/python" ] && \
+            "$ROOT/.venv/bin/python" -m cmake --version >/dev/null 2>&1; then
+            CMAKE_BIN="$ROOT/.venv/bin/python"
+            CMAKE_MODE=python-module
+        else
+            die "cmake on PATH cannot execute: $candidate"
+        fi
+    elif [ -x "$ROOT/.venv/bin/python" ] && \
+        "$ROOT/.venv/bin/python" -m cmake --version >/dev/null 2>&1; then
+        # Python entry-point shebangs contain absolute paths and commonly go
+        # stale after a checkout move.  Running the installed module through
+        # the venv interpreter is relocation-safe.
+        CMAKE_BIN="$ROOT/.venv/bin/python"
+        CMAKE_MODE=python-module
     else
         die "cmake >= 3.10 is required (the repo .venv is also searched)"
+    fi
+}
+
+run_cmake() {
+    if [ "$CMAKE_MODE" = python-module ]; then
+        "$CMAKE_BIN" -m cmake "$@"
+    else
+        "$CMAKE_BIN" "$@"
     fi
 }
 
@@ -136,7 +170,7 @@ fi
 
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v cc >/dev/null 2>&1 || die "a native C compiler is required"
-CMAKE_BIN=$(find_cmake)
+select_cmake
 
 mkdir -p "$CACHE"
 if [ ! -e "$SOURCE" ]; then
@@ -147,7 +181,7 @@ verify_source
 mkdir -p "$BUILD" "$PREFIX"
 
 configure() {
-    "$CMAKE_BIN" "$SOURCE" "$@" \
+    run_cmake "$SOURCE" "$@" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DBUILD_SHARED_LIBS=ON \
@@ -194,6 +228,8 @@ case "$jobs" in
 esac
 [ "$jobs" -gt 0 ] || die "HOST_LIBIIO_JOBS must be a positive integer"
 
-CMAKE_BUILD_PARALLEL_LEVEL=$jobs "$CMAKE_BIN" --build "$BUILD" --target install
+CMAKE_BUILD_PARALLEL_LEVEL=$jobs
+export CMAKE_BUILD_PARALLEL_LEVEL
+run_cmake --build "$BUILD" --target install
 verify_install
 printf 'libiio host tools ready: %s\n' "$PREFIX"

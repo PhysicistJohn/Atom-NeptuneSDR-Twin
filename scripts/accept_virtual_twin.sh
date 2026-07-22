@@ -18,7 +18,8 @@ hash-locked public inputs; it never flashes hardware.
 
 Options:
   --no-build          Reuse an existing P210 QEMU/ARM/host-libiio build
-  --reference-only    Skip the firmware-executing QEMU acceptance
+  --source-only       Run the source gate with exactly 15 explicit QEMU skips
+  --reference-only    Deprecated alias for --source-only
   -h, --help          Show this help
 EOF
 }
@@ -26,13 +27,30 @@ EOF
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --no-build) BUILD=no; shift ;;
-        --reference-only) FIRMWARE=no; shift ;;
+        --source-only|--reference-only) FIRMWARE=no; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
 
-mkdir -p "$OUTPUT"
+RUN_ID=$(date -u '+%Y%m%dT%H%M%SZ')-$$
+OUTPUT_BASE=$OUTPUT
+OUTPUT="$OUTPUT_BASE/runs/$RUN_ID"
+python3 "$ROOT/scripts/acceptance_gate.py" start \
+    --root "$ROOT" --output "$OUTPUT" --run-id "$RUN_ID" \
+    --mode "$(if [ "$FIRMWARE" = yes ]; then printf full; else printf source; fi)"
+printf '%s\n' RUNNING >"$OUTPUT/status"
+acceptance_done=no
+record_failure() {
+    result=$?
+    if [ "$acceptance_done" != yes ]; then
+        printf 'FAILED exit=%s\n' "$result" >"$OUTPUT/status"
+    fi
+}
+trap record_failure EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # The live qtests discover the pinned executable. Build it before the cosim
@@ -44,14 +62,60 @@ if [ "$FIRMWARE" = yes ]; then
     else
         test -x "${P210_QEMU_CACHE:-$ROOT/.cache/qemu-p210}/bin/qemu-system-arm"
     fi
+
+    QEMU_CACHE=${P210_QEMU_CACHE:-"$ROOT/.cache/qemu-p210"}
+    QEMU_BINARY=${P210_QEMU_BINARY:-"$QEMU_CACHE/bin/qemu-system-arm"}
+    QEMU_BUILD_DIR=${P210_QEMU_BUILD_DIR:-"$QEMU_CACHE/src/qemu-10.0.2/build-p210"}
+    test -x "$QEMU_BINARY"
+    test -f "$QEMU_BUILD_DIR/compile_commands.json"
+    python3 - "$QEMU_BINARY" "$QEMU_CACHE/bin/qemu-system-arm" \
+        "$QEMU_BUILD_DIR/qemu-system-arm" <<'PY'
+import os
+import sys
+if not os.path.samefile(sys.argv[1], sys.argv[2]) or not os.path.samefile(sys.argv[1], sys.argv[3]):
+    raise SystemExit("configured, cached, and build-directory QEMU binaries are not identical")
+PY
+    "$QEMU_BINARY" --version | grep -Fq 'QEMU emulator version 10.0.2'
+    "$QEMU_BINARY" -machine xilinx-zynq-a9,help 2>&1 |
+        grep -q 'p210=<bool>.*Enable HAMGEEK P210 SDR devices'
+    export P210_QEMU_BINARY="$QEMU_BINARY"
+    export P210_QEMU_BUILD_DIR="$QEMU_BUILD_DIR"
+else
+    # Never let source-only acceptance consume a coincidental or stale cache.
+    NO_QEMU="$OUTPUT/no-qemu"
+    mkdir "$NO_QEMU"
+    export P210_QEMU_BINARY="$NO_QEMU/qemu-system-arm"
+    export P210_QEMU_BUILD_DIR="$NO_QEMU"
 fi
 
 python3 -m compileall -q "$ROOT/src" "$ROOT/scripts" "$ROOT/tests" \
     "$ROOT/cosim/tests"
-python3 -m unittest discover -s "$ROOT/tests" -v \
-    >"$OUTPUT/reference-tests.log" 2>&1
-python3 -m unittest discover -s "$ROOT/cosim/tests" -v \
-    >"$OUTPUT/cosim-tests.log" 2>&1
+python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
+    --start-dir "$ROOT/tests" --label acceptance-reference \
+    --summary "$OUTPUT/reference-tests.json" \
+    --log "$OUTPUT/reference-tests.log" \
+    --expect-skips 0 --min-tests 46
+if [ "$FIRMWARE" = yes ]; then
+    python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
+        --start-dir "$ROOT/cosim/tests" --label acceptance-live-cosim \
+        --summary "$OUTPUT/cosim-tests.json" \
+        --log "$OUTPUT/cosim-tests.log" \
+        --expect-skips 0 --min-tests 22 \
+        --require-test test_qemu_device_sources.QEMUDeviceSourceTests.test_sources_compile_with_qemu_10_flags \
+        --require-test test_qemu_fft_source.P210FFTSourceTests.test_integrated_qemu_executes_65536_bins_for_two_channels \
+        --require-test test_qemu_fft_source.P210FFTSourceTests.test_integrated_qemu_executes_fft_and_rejects_overlap \
+        --require-test test_qemu_sdr_live.P210SDRLiveTests.test_xsa_capabilities_alignment_and_pause_readback
+else
+    python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
+        --start-dir "$ROOT/cosim/tests" --label acceptance-source-cosim \
+        --summary "$OUTPUT/cosim-tests.json" \
+        --log "$OUTPUT/cosim-tests.log" \
+        --expect-skips 15 \
+        --expect-skip-reason '2:set P210_QEMU_BUILD_DIR to a configured QEMU 10.0.2 build' \
+        --expect-skip-reason '13:set P210_QEMU_BINARY to an integrated P210 QEMU binary' \
+        --skip-policy source-without-qemu \
+        --min-tests 22
+fi
 
 for script in "$ROOT"/scripts/*.sh; do
     bash -n "$script"
@@ -71,6 +135,7 @@ python3 -m neptunesdr_twin appliance --dry-run \
     >"$OUTPUT/firmware-appliance-plan.txt"
 
 if [ "$FIRMWARE" = yes ]; then
+    export P210_RUNTIME_OUTPUT="$OUTPUT/runtime"
     if [ "$BUILD" = yes ]; then
         "$ROOT/scripts/run_p210_firmware.sh" \
             >"$OUTPUT/firmware-runtime.log" 2>&1
@@ -78,12 +143,30 @@ if [ "$FIRMWARE" = yes ]; then
         "$ROOT/scripts/run_p210_firmware.sh" --no-build \
             >"$OUTPUT/firmware-runtime.log" 2>&1
     fi
-    grep -Fq 'P210_RUNTIME PASS' "$OUTPUT/firmware-runtime.log"
+    grep -Fxq 'P210_RUNTIME PASS' "$OUTPUT/firmware-runtime.log"
 fi
 
 if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$ROOT" diff --check
 fi
 
-printf '%s\n' 'NEPTUNE_TWIN_ACCEPTANCE PASS'
+if [ "$FIRMWARE" = yes ]; then
+    python3 "$ROOT/scripts/acceptance_gate.py" finish-full \
+        --root "$ROOT" --output "$OUTPUT" \
+        --reference-summary "$OUTPUT/reference-tests.json" \
+        --cosim-summary "$OUTPUT/cosim-tests.json" \
+        --qemu "$QEMU_BINARY" --qemu-build-dir "$QEMU_BUILD_DIR" \
+        --firmware-log "$OUTPUT/firmware-runtime.log" \
+        --runtime-dir "$OUTPUT/runtime"
+    printf '%s\n' PASS >"$OUTPUT/status"
+    acceptance_done=yes
+    printf '%s\n' "$RUN_ID" >"$OUTPUT_BASE/latest-pass.part"
+    mv "$OUTPUT_BASE/latest-pass.part" "$OUTPUT_BASE/latest-pass"
+    printf '%s\n' 'NEPTUNE_TWIN_ACCEPTANCE PASS'
+    printf 'manifest=%s\n' "$OUTPUT/acceptance-manifest.json"
+else
+    printf '%s\n' 'SOURCE_ONLY_PASS_WITH_15_QEMU_SKIPS' >"$OUTPUT/status"
+    acceptance_done=yes
+    printf '%s\n' 'NEPTUNE_TWIN_SOURCE_ACCEPTANCE PASS skipped=15'
+fi
 printf 'evidence=%s\n' "$OUTPUT"
