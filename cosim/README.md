@@ -5,7 +5,11 @@ P210 Linux image against QEMU 10.0.2.  It is not a second abstract board
 model: the guest reaches the same physical addresses, SPI command format and
 interrupt numbers described by the P210 device tree.
 
-The direct QEMU path is the shortest path to useful pre-arrival firmware work:
+The direct QEMU path is the shortest path to useful pre-arrival firmware work.
+This directory owns the virtual hardware; ARM source, firmware inputs, runtime
+composition, and the canonical board-side ABI live in the separately pinned
+[`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave)
+repository:
 
 1. `p210-ad9361` replaces the NOR flash incorrectly attached to PS SPI0 chip
    select 0 by stock `xilinx-zynq-a9`.
@@ -101,7 +105,7 @@ bandwidths derive a finite component tuple from the same inverse-RC equation
 used by the driver.
 
 The QEMU machine integration patch and build are maintained separately under
-`qemu/` by the runtime layer.  The reusable device sources live under
+`qemu/` by the Twin runtime layer. The reusable device sources live under
 `qemu-10.0.2/`; copy them into the corresponding QEMU source directories and
 register them from the QEMU Meson files.
 
@@ -142,7 +146,7 @@ use it without an additional patch set.
 Exact addresses and probe contacts are machine-readable in
 [`p210-contacts.json`](p210-contacts.json).
 The FFT register ABI and memory ordering are specified separately in
-[`P210_FFT_ABI.md`](../docs/P210_FFT_ABI.md).
+[Firmwave's canonical `P210_FFT_ABI.md`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave/blob/main/docs/P210_FFT_ABI.md).
 
 ## License boundary
 

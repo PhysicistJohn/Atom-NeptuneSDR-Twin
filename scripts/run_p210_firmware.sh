@@ -8,9 +8,13 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$ROOT/scripts/cache_relocation.sh"
+FIRMWAVE_ROOT=$(python3 "$ROOT/scripts/resolve_firmwave.py")
+export NEPTUNESDR_FIRMWAVE_ROOT="$FIRMWAVE_ROOT"
+export PYTHONPATH="$FIRMWAVE_ROOT/src:$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 QEMU_CACHE=${P210_QEMU_CACHE:-"$ROOT/.cache/qemu-p210"}
 RUNTIME=${P210_RUNTIME_OUTPUT:-"$ROOT/.cache/p210-runtime"}
 GUEST=${P210_GUEST_OUTPUT:-"$ROOT/.cache/p210-guest/neptune-fft-streamer"}
+FIRMWARE_CACHE=${P210_FIRMWARE_CACHE:-"$ROOT/.cache/firmwave/firmware"}
 FFT_TOOLCHAIN=${P210_FFT_TOOLCHAIN:-"$ROOT/.cache/fft-toolchain"}
 FFT_TOOLCHAIN_SCHEMA=fft-toolchain-v2
 QEMU="$QEMU_CACHE/bin/qemu-system-arm"
@@ -163,7 +167,8 @@ if [ "$BUILD" = yes ]; then
             fi
         fi
     fi
-    ZIG="$ZIG_BIN" P210_GUEST_OUTPUT="$GUEST" "$ROOT/scripts/build_guest_fft.sh"
+    ZIG="$ZIG_BIN" P210_GUEST_OUTPUT="$GUEST" \
+        "$FIRMWAVE_ROOT/scripts/build_guest_fft.sh"
     "$ROOT/scripts/build_host_libiio.sh"
 else
     "$ROOT/scripts/build_p210_qemu.sh" --verify || \
@@ -172,10 +177,15 @@ else
     "$ROOT/scripts/build_host_libiio.sh" --verify
 fi
 
-python3 "$ROOT/scripts/fetch_firmware.py" p210-sd-boot plutosdr-fw-v0.39
-python3 "$ROOT/scripts/prepare_runtime.py" \
+python3 "$FIRMWAVE_ROOT/scripts/fetch_firmware.py" \
+    --cache-dir "$FIRMWARE_CACHE" p210-sd-boot plutosdr-fw-v0.39
+python3 "$FIRMWAVE_ROOT/scripts/prepare_runtime.py" \
+    --cache-dir "$FIRMWARE_CACHE" \
     --output "$RUNTIME" \
     --fft-streamer "$GUEST"
+python3 "$ROOT/scripts/verify_firmwave_bundle.py" \
+    --firmwave-root "$FIRMWAVE_ROOT" \
+    --runtime "$RUNTIME"
 
 for artifact in "$QEMU" "$KERNEL" "$DTB" "$INITRD"; do
     [ -f "$artifact" ] || die "runtime artifact is absent: $artifact"

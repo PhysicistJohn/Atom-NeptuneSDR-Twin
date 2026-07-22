@@ -1,22 +1,14 @@
-"""The two real trust boundaries fail closed: network NSFT bytes in, fetched firmware in."""
+"""Untrusted NSFT network bytes fail closed at the Twin boundary."""
 
-import hashlib
-import io
-import json
 import struct
-import tempfile
 import unittest
-from pathlib import Path
-from unittest import mock
 
-from neptunesdr_twin.errors import FirmwareFormatError
 from neptunesdr_twin.fft import (
     PACKET_HEADER_BYTES,
     PacketCRCError,
     PayloadEncoding,
     SpectrumPacket,
 )
-from neptunesdr_twin.firmware import fetch_locked_artifact, load_firmware_lock
 from neptunesdr_twin.spectrum_transport import SpectrumStreamDecoder, SpectrumStreamError
 
 
@@ -53,49 +45,6 @@ class SpectrumStreamTrustTests(unittest.TestCase):
         raw[-1] ^= 0x01
         with self.assertRaises(PacketCRCError):
             SpectrumStreamDecoder().feed(raw)
-
-
-class FirmwareTrustTests(unittest.TestCase):
-    def test_firmware_lock_has_content_addresses(self):
-        lock = load_firmware_lock()
-        self.assertIn("p210-sd-boot", lock["artifacts"])
-        self.assertIn("p210-system-xsa", lock["artifacts"])
-        for artifact in lock["artifacts"].values():
-            self.assertEqual(len(artifact["sha256"]), 64)
-
-    def test_locked_fetch_rejects_wrong_bytes(self):
-        payload = b"locked bytes"
-        lock = {
-            "artifacts": {
-                "item": {
-                    "url": "https://invalid.example/item",
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                    "bytes": len(payload),
-                }
-            }
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            lock_path = root / "lock.json"
-            lock_path.write_text(json.dumps(lock), encoding="utf-8")
-            destination = root / "item.bin"
-            with mock.patch(
-                "neptunesdr_twin.firmware.urllib.request.urlopen",
-                return_value=io.BytesIO(payload),
-            ):
-                self.assertEqual(
-                    fetch_locked_artifact("item", destination, lock_path),
-                    destination,
-                )
-            self.assertEqual(destination.read_bytes(), payload)
-
-            with mock.patch(
-                "neptunesdr_twin.firmware.urllib.request.urlopen",
-                return_value=io.BytesIO(payload + b"!"),
-            ):
-                with self.assertRaises(FirmwareFormatError):
-                    fetch_locked_artifact("item", destination, lock_path)
-
 
 if __name__ == "__main__":
     unittest.main()

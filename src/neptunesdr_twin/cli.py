@@ -13,23 +13,15 @@ import sysconfig
 import threading
 import time
 from typing import Callable, Optional, Sequence
-import zipfile
 
 from .ad9361 import AD9361, ENSMState
 from .board import NeptuneSDRTwin
 from .contracts import ContractSystem
-from .firmware import (
-    fetch_locked_artifact,
-    load_firmware_lock,
-    validate_fit_image,
-    validate_p210_firmware,
-)
 from .fft import FFTConfig, PLThroughputContract, PayloadEncoding, calculate_output_rate_budget
 from .spec import P210Spec
 from .throughput import Wideband50MHzProfile
 from .usb import load_observed_usb_profile
 from .version import __version__
-from .xsa import validate_xsa
 from .zynq import BootSource
 
 
@@ -77,20 +69,6 @@ def _contract_path() -> Path:
     if installed.is_file():
         return installed
     raise FileNotFoundError("cannot locate the installed P210 contract system")
-
-
-def _validate_firmware(path: Path):
-    if path.suffix.lower() == ".xsa":
-        return validate_xsa(path)
-    if path.suffix.lower() == ".zip":
-        with zipfile.ZipFile(path) as archive:
-            names = {Path(name).name: name for name in archive.namelist()}
-            if "pluto.frm" not in names:
-                raise ValueError("firmware zip contains no pluto.frm")
-            return validate_fit_image(archive.read(names["pluto.frm"]), str(path) + "!pluto.frm")
-    if path.suffix.lower() in {".frm", ".dfu", ".itb"}:
-        return validate_fit_image(path.read_bytes(), str(path))
-    return validate_p210_firmware(path)
 
 
 def _host_port(value: str):
@@ -221,13 +199,6 @@ def build_parser() -> argparse.ArgumentParser:
     appliance.add_argument("--no-usbip", action="store_true")
     appliance.add_argument("--duration", type=_duration, help="stop after this many seconds")
     appliance.add_argument("--dry-run", action="store_true")
-
-    validate = commands.add_parser("validate-firmware", help="inspect a P210 bundle or Pluto FIT/zip")
-    validate.add_argument("path", type=Path)
-
-    fetch = commands.add_parser("fetch-firmware", help="download one content-addressed firmware input")
-    fetch.add_argument("name", choices=sorted(load_firmware_lock()["artifacts"]))
-    fetch.add_argument("output", type=Path)
 
     return parser
 
@@ -582,14 +553,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         finally:
             for signum, handler in previous.items():
                 signal.signal(signum, handler)
-        return 0
-    if args.command == "validate-firmware":
-        report = _validate_firmware(args.path)
-        _json(report.to_dict())
-        return 0 if report.compatible else 1
-    if args.command == "fetch-firmware":
-        path = fetch_locked_artifact(args.name, args.output)
-        _json({"artifact": args.name, "path": str(path), "verified": True})
         return 0
     raise AssertionError("unhandled command")
 

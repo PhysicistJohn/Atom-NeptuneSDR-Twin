@@ -19,7 +19,11 @@ COSIM = ROOT / "cosim"
 QEMU_SOURCES = COSIM / "qemu-10.0.2"
 SOURCE = QEMU_SOURCES / "hw/misc/p210_fft.c"
 HEADER = QEMU_SOURCES / "include/hw/misc/p210_fft.h"
-ABI_DOC = ROOT / "docs/P210_FFT_ABI.md"
+FIRMWAVE_ROOT = Path(
+    os.environ.get("NEPTUNESDR_FIRMWAVE_ROOT", ROOT.parent / "Atom-NeptuneSDR_Firmwave")
+)
+ABI_DOC = FIRMWAVE_ROOT / "docs/P210_FFT_ABI.md"
+INTERFACE_SPEC = FIRMWAVE_ROOT / "specs/p210-firmware-interface-v1.json"
 FFT_BASE = 0x7C450000
 
 
@@ -206,6 +210,36 @@ class P210FFTSourceTests(unittest.TestCase):
         self.assertEqual(1 << definitions["P210_FFT_MAX_LOG2_N"], 65_536)
         self.assertEqual(definitions["P210_FFT_MAX_CHANNELS"], 2)
         self.assertEqual(definitions["P210_FFT_ERROR_BUFFER_OVERLAP"], 10)
+
+    def test_qemu_header_refines_the_canonical_firmwave_interface(self) -> None:
+        interface = json.loads(INTERFACE_SPEC.read_text(encoding="utf-8"))
+        self.assertEqual(
+            interface["schema"], "neptunesdr.p210-firmware-interface/v1"
+        )
+        fft = interface["pl_fft_abi"]
+        definitions = _defines()
+        self.assertEqual(int(fft["base_address"], 16), FFT_BASE)
+        self.assertEqual(int(fft["span_bytes"], 16), definitions["P210_FFT_MMIO_SIZE"])
+        self.assertEqual(int(fft["identity"], 16), definitions["P210_FFT_ID"])
+        self.assertEqual(int(fft["version"], 16), definitions["P210_FFT_VERSION"])
+        self.assertEqual(fft["minimum_log2_n"], definitions["P210_FFT_MIN_LOG2_N"])
+        self.assertEqual(fft["maximum_log2_n"], definitions["P210_FFT_MAX_LOG2_N"])
+        self.assertEqual(fft["maximum_channels"], definitions["P210_FFT_MAX_CHANNELS"])
+
+        for name, value in fft["registers"].items():
+            self.assertEqual(int(value, 16), definitions["P210_FFT_REG_" + name])
+        for name, value in fft["control_bits"].items():
+            self.assertEqual(int(value, 16), definitions["P210_FFT_CONTROL_" + name])
+        for name, value in fft["status_bits"].items():
+            self.assertEqual(int(value, 16), definitions["P210_FFT_STATUS_" + name])
+        for name, value in fft["capability_bits"].items():
+            self.assertEqual(int(value, 16), definitions["P210_FFT_CAP_" + name])
+        for name, value in fft["error_codes"].items():
+            self.assertEqual(value, definitions["P210_FFT_ERROR_" + name])
+        self.assertEqual(
+            int(fft["capabilities_value"], 16),
+            sum(int(value, 16) for value in fft["capability_bits"].values()),
+        )
 
     def test_source_executes_integer_fft_and_dma_not_fake_completion(self) -> None:
         source = SOURCE.read_text()

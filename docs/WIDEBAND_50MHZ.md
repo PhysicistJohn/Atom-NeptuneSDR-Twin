@@ -101,7 +101,11 @@ The input budget assumes two aggregate complex-sample lanes at a 100 MHz stream 
 ### Executable pre-arrival hardware path
 
 The P210-enabled QEMU machine now exercises the intended software-visible
-path with real ARM firmware components:
+path with real ARM firmware components. The ARM source, input locks, generated
+runtime manifest, and [canonical FFT ABI](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave/blob/main/docs/P210_FFT_ABI.md)
+are owned by the pinned
+[`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave)
+checkout; this Twin owns and verifies the QEMU/contact side:
 
 ```text
 AD9361/CF-AXI -> four-entry AXI-DMAC -> Linux RX IIO buffer

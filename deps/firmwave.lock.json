@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "profile": "qemu-development",
+  "repository": {
+    "url": "https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave.git",
+    "commit": "bc0184021043b593174aeb258d4a1520375a7038",
+    "tree": "d2b86b7f6010819c80a344b8cc148ed7447af721"
+  },
+  "interface": {
+    "path": "specs/p210-firmware-interface-v1.json",
+    "sha256": "e2a95801452d4f5573acf3e13a0000d548382dee82d87644dd2dac231afea27c"
+  }
+}

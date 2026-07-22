@@ -3,10 +3,21 @@
 ## Scope
 
 `scripts/run_p210_firmware.sh` is the pre-arrival hardware-development gate.
-It boots the public P210 Linux 4.14 kernel and device tree with the hash-locked
-official Pluto v0.39 ARM userspace on the repository's P210-enabled QEMU 10.0.2
-machine. This is an integration composition, not a representation that the
-seller supplied or tested the combined image.
+The Twin resolves the exact clean
+[`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave)
+revision pinned by `deps/firmwave.lock.json`, asks it to compose the public P210
+Linux 4.14 kernel/device tree with the hash-locked official Pluto v0.39 ARM
+userspace, independently verifies its non-flashable runtime manifest, and boots
+that bundle on the Twin's P210-enabled QEMU 10.0.2 machine. This is an
+integration composition, not a representation that the seller supplied or
+tested the combined image.
+
+Resolution honors `NEPTUNESDR_FIRMWAVE_ROOT` when set and otherwise checks
+`../Atom-NeptuneSDR_Firmwave`; if neither is present it can clone the pinned
+revision into `.cache/deps/firmwave/`. `python3 scripts/resolve_firmwave.py
+--offline` prohibits that fetch. User-managed checkouts are never modified,
+and an origin, commit, tree, interface-hash, or cleanliness mismatch fails the
+gate.
 
 The default acceptance run must prove all of these contacts in one boot:
 
@@ -29,6 +40,10 @@ The run writes its serial log, QEMU diagnostic log, libiio context, NSFT wire
 capture, decoded JSON report, and provenance manifest below
 `.cache/p210-runtime/`. Inputs and derived images are SHA-256 recorded in the
 manifest; the wire-capture hash varies because packet timestamps are live.
+The full acceptance manifest also binds both repository commits/source-state
+hashes, Firmwave's canonical interface hash, its runtime manifest, and the
+independently rehashed artifacts. A result from a different or dirty Firmwave
+tree cannot be promoted to a pass.
 
 ## Current deterministic acceptance vector
 
@@ -97,4 +112,5 @@ The public device tree's host-mode USB controller remains outside this QEMU
 runtime. The complete appliance composes it with the standard USB/IP device
 adapter; native IIO can bridge to this same released guest `iiod`. See the
 [complete appliance](VIRTUAL_APPLIANCE.md), [USB](USB.md), the
-[FFT ABI](P210_FFT_ABI.md), and the [50-MHz plan](WIDEBAND_50MHZ.md).
+[canonical Firmwave FFT ABI](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave/blob/main/docs/P210_FFT_ABI.md),
+and the [50-MHz plan](WIDEBAND_50MHZ.md).

@@ -36,6 +36,13 @@ None of those values is a delivered-unit fact until a fresh descriptor capture a
 
 ## Firmware and virtual-device composition
 
+The locked
+[`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave)
+checkout supplies the audited, non-flashable `qemu-development` guest bundle.
+This Twin supplies the QEMU devices and host-facing USB implementation; the
+full acceptance manifest binds both source identities and the Firmwave runtime
+artifact hashes.
+
 The public P210 device tree configures its enabled ChipIdea controller with
 `dr_mode = "host"`, while the official Pluto v0.39 `/etc/init.d/S23udc`
 service expects a gadget UDC.  Upstream QEMU 10.0.2 supplies the Zynq

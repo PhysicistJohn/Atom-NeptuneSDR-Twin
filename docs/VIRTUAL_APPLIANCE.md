@@ -20,8 +20,13 @@ is therefore judged at contacts, not by reproducing the board's construction:
 
 That is a whole virtual development target.  It is deliberately layered:
 
-- QEMU executes the real ARM instructions, public P210 kernel/device tree,
-  released ADI drivers and official Pluto userspace.
+- [`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave)
+  owns the ARM source, immutable firmware inputs, validation/build tools,
+  canonical FFT ABI, and assembly of the explicitly non-flashable
+  `qemu-development` bundle.
+- This Twin owns QEMU and the board-visible devices that execute the real ARM
+  instructions, public P210 kernel/device tree, released ADI drivers and
+  official Pluto userspace.
 - The deterministic PL/RF reference layer supplies continuous sample-time
   behavior and numerical/wire-format oracles that QEMU is not intended to run
   at wall-clock RF rate.
@@ -32,6 +37,14 @@ That is a whole virtual development target.  It is deliberately layered:
 No board is required for any of those virtual behaviors.  A future unit
 capture is a differential-refinement input, not a prerequisite for using the
 twin.
+
+The repository boundary is enforced. `deps/firmwave.lock.json`
+pins Firmwave's public URL, full commit, tree, and interface SHA-256. The
+resolver accepts an exact clean `../Atom-NeptuneSDR_Firmwave` sibling, an exact
+checkout named by `NEPTUNESDR_FIRMWAVE_ROOT`, or an automatically populated
+Twin-owned `.cache/deps/firmwave/` checkout. It never changes a user-managed
+checkout. The runtime gate independently rehashes the interface, manifest, and
+bundle artifacts, and full acceptance records both source identities.
 
 ## Run it
 
@@ -69,6 +82,9 @@ at `127.0.0.1:30432`, live UART1 at `127.0.0.1:30433`, and USB/IP at
 `127.0.0.1:3240`. It exits only when a
 service fails or the operator stops it, and tears down both child processes.
 After the first build, use `--no-build` for a faster start.
+The launcher resolves the locked companion automatically. Use
+`python3 scripts/resolve_firmwave.py --json` to inspect the selected checkout or
+`--offline` to prohibit a managed clone before starting the appliance.
 
 The equivalent two-terminal form, useful while debugging one layer, is shown
 below. USB/IP has no authentication or encryption; binding it to `0.0.0.0`
@@ -130,7 +146,9 @@ The public materials do not contain a complete seller-authored P210 firmware
 image.  The executable composition is intentionally explicit and hash-locked:
 the public P210 kernel, device tree and XSA are combined with the official
 Pluto v0.39 ARM rootfs.  This composition has been executed in the P210 QEMU
-machine; it is not described as byte-identical to unknown seller storage.
+machine; its Firmwave manifest says `profile: qemu-development` and
+`flashable: false`. It is not described as byte-identical to unknown seller
+storage and must not be written to the arriving board.
 
 That distinction is provenance, not missing functionality.  Host software can
 exercise the advertised control, sample, FFT, Ethernet and USB contacts now.

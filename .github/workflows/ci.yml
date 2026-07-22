@@ -42,6 +42,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Resolve the exact Firmwave source lock
+        run: python scripts/resolve_firmwave.py --json
       - name: Install the twin
         run: python -m pip install -e .
       - name: Run source gate (exactly 15 live-QEMU skips)
@@ -68,6 +70,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+      - name: Resolve the exact Firmwave source lock
+        run: python scripts/resolve_firmwave.py --json
       - name: Require the supported native QEMU build host
         run: test "$(uname -s)-$(uname -m)" = Darwin-arm64
       - name: Install the twin

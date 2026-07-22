@@ -117,6 +117,15 @@ def _source_state(root: Path) -> Dict[str, Any]:
     return material
 
 
+def _named_source_state(root: Path, repository: str) -> Dict[str, Any]:
+    state = _source_state(root)
+    return {
+        "repository": repository,
+        "root": str(root.resolve()),
+        **state,
+    }
+
+
 class _Tee:
     def __init__(self, streams: Iterable[TextIO]) -> None:
         self.streams = tuple(streams)
@@ -296,8 +305,11 @@ def _test_suite(args: argparse.Namespace) -> int:
 
 def _start(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
+    firmwave_root = Path(args.firmwave_root).resolve()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
+    twin_source = _named_source_state(root, "Atom-NeptuneSDR-Twin")
+    firmwave_source = _named_source_state(firmwave_root, "Atom-NeptuneSDR_Firmwave")
     payload = {
         "schema": SCHEMA,
         "kind": "acceptance-run-state",
@@ -305,7 +317,13 @@ def _start(args: argparse.Namespace) -> int:
         "mode": args.mode,
         "run_id": args.run_id,
         "started_at": _utc_now(),
-        "source": _source_state(root),
+        # Keep ``source`` as the Twin alias for v1 manifest consumers while
+        # making the two-repository execution boundary explicit.
+        "source": twin_source,
+        "sources": {
+            "twin": twin_source,
+            "firmwave": firmwave_source,
+        },
     }
     _write_json(output / "run-state.json", payload)
     return 0
@@ -449,6 +467,7 @@ def _verify_runtime_contract(
 
 def _finish_full(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
+    firmwave_root = Path(args.firmwave_root).resolve()
     output = Path(args.output).resolve()
     state_path = output / "run-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -456,18 +475,46 @@ def _finish_full(args: argparse.Namespace) -> int:
         raise ValueError("acceptance run state is absent or not RUNNING")
     if state.get("mode") != "full":
         raise ValueError("only a full run can produce a full acceptance manifest")
-    current_source = _source_state(root)
-    if current_source["state_sha256"] != state["source"]["state_sha256"]:
-        raise ValueError("repository source state changed during acceptance")
+    recorded_sources = state.get("sources")
+    if not isinstance(recorded_sources, dict):
+        raise ValueError("acceptance run state has no two-repository source identity")
+    current_source = _named_source_state(root, "Atom-NeptuneSDR-Twin")
+    current_firmwave_source = _named_source_state(
+        firmwave_root, "Atom-NeptuneSDR_Firmwave"
+    )
+    current_sources = {
+        "twin": current_source,
+        "firmwave": current_firmwave_source,
+    }
+    for name, current in current_sources.items():
+        recorded = recorded_sources.get(name)
+        if not isinstance(recorded, dict):
+            raise ValueError("acceptance run state is missing %s source" % name)
+        if (
+            recorded.get("repository") != current["repository"]
+            or recorded.get("root") != current["root"]
+        ):
+            raise ValueError(
+                "%s repository identity changed during acceptance" % name.capitalize()
+            )
+        if current["state_sha256"] != recorded.get("state_sha256"):
+            raise ValueError(
+                "%s repository source state changed during acceptance" % name.capitalize()
+            )
 
     reference_summary = _load_passing_summary(
         Path(args.reference_summary), "reference"
     )
     cosim_summary = _load_passing_summary(Path(args.cosim_summary), "cosim")
+    firmwave_summary = _load_passing_summary(
+        Path(args.firmwave_summary), "firmwave"
+    )
     if reference_summary["results"]["skipped"] != 0:
         raise ValueError("full reference suite contains skipped tests")
     if cosim_summary["results"]["skipped"] != 0:
         raise ValueError("full co-simulation suite contains skipped tests")
+    if firmwave_summary["results"]["skipped"] != 0:
+        raise ValueError("full Firmwave suite contains skipped tests")
 
     firmware_log = Path(args.firmware_log).resolve()
     firmware_lines = firmware_log.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -511,6 +558,19 @@ def _finish_full(args: argparse.Namespace) -> int:
     runtime_manifest = json.loads(
         (runtime / "runtime-manifest.json").read_text(encoding="utf-8")
     )
+    runtime_firmwave = runtime_manifest.get("firmwave_source")
+    if not isinstance(runtime_firmwave, dict):
+        raise ValueError("runtime manifest has no Firmwave source identity")
+    expected_firmwave_identity = {
+        "repository": "Atom-NeptuneSDR_Firmwave",
+        "commit": current_firmwave_source["commit"],
+        "state_sha256": current_firmwave_source["state_sha256"],
+    }
+    for key, expected in expected_firmwave_identity.items():
+        if runtime_firmwave.get(key) != expected:
+            raise ValueError(
+                "runtime manifest Firmwave %s does not match tested source" % key
+            )
     verified_claims = _verify_runtime_contract(runtime, runtime_manifest)
     runtime_artifacts = [
         _artifact(path, output)
@@ -539,11 +599,14 @@ def _finish_full(args: argparse.Namespace) -> int:
         "started_at": state["started_at"],
         "completed_at": _utc_now(),
         "source": current_source,
+        "sources": current_sources,
         "tests": {
             "reference": reference_summary,
             "cosim": cosim_summary,
+            "firmwave": firmwave_summary,
             "total_run": reference_summary["results"]["tests_run"]
-            + cosim_summary["results"]["tests_run"],
+            + cosim_summary["results"]["tests_run"]
+            + firmwave_summary["results"]["tests_run"],
             "total_skipped": 0,
         },
         "qemu": {
@@ -558,6 +621,7 @@ def _finish_full(args: argparse.Namespace) -> int:
             "pass": True,
             "pass_marker": PASS_MARKER,
             "verified_claims": verified_claims,
+            "firmwave_source": current_firmwave_source,
             "runtime_directory": str(runtime),
             "runtime_manifest": runtime_manifest,
             "runtime_artifacts": runtime_artifacts,
@@ -596,6 +660,7 @@ def _parser() -> argparse.ArgumentParser:
 
     start = subparsers.add_parser("start")
     start.add_argument("--root", required=True)
+    start.add_argument("--firmwave-root", required=True)
     start.add_argument("--output", required=True)
     start.add_argument("--run-id", required=True)
     start.add_argument("--mode", choices=("source", "full"), required=True)
@@ -603,9 +668,11 @@ def _parser() -> argparse.ArgumentParser:
 
     finish = subparsers.add_parser("finish-full")
     finish.add_argument("--root", required=True)
+    finish.add_argument("--firmwave-root", required=True)
     finish.add_argument("--output", required=True)
     finish.add_argument("--reference-summary", required=True)
     finish.add_argument("--cosim-summary", required=True)
+    finish.add_argument("--firmwave-summary", required=True)
     finish.add_argument("--qemu", required=True)
     finish.add_argument("--qemu-build-dir", required=True)
     finish.add_argument("--firmware-log", required=True)

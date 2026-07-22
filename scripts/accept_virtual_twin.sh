@@ -33,11 +33,15 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+FIRMWAVE_ROOT=$(python3 "$ROOT/scripts/resolve_firmwave.py")
+export NEPTUNESDR_FIRMWAVE_ROOT="$FIRMWAVE_ROOT"
+FIRMWARE_CACHE=${P210_FIRMWARE_CACHE:-"$ROOT/.cache/firmwave/firmware"}
 RUN_ID=$(date -u '+%Y%m%dT%H%M%SZ')-$$
 OUTPUT_BASE=$OUTPUT
 OUTPUT="$OUTPUT_BASE/runs/$RUN_ID"
 python3 "$ROOT/scripts/acceptance_gate.py" start \
-    --root "$ROOT" --output "$OUTPUT" --run-id "$RUN_ID" \
+    --root "$ROOT" --firmwave-root "$FIRMWAVE_ROOT" \
+    --output "$OUTPUT" --run-id "$RUN_ID" \
     --mode "$(if [ "$FIRMWARE" = yes ]; then printf full; else printf source; fi)"
 printf '%s\n' RUNNING >"$OUTPUT/status"
 acceptance_done=no
@@ -51,7 +55,7 @@ trap record_failure EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$FIRMWAVE_ROOT/src:$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # The live qtests discover the pinned executable. Build it before the cosim
 # suite on a fresh checkout so they cannot be silently skipped in a full run.
@@ -89,19 +93,36 @@ else
 fi
 
 python3 -m compileall -q "$ROOT/src" "$ROOT/scripts" "$ROOT/tests" \
-    "$ROOT/cosim/tests"
+    "$ROOT/cosim/tests" "$FIRMWAVE_ROOT/src" "$FIRMWAVE_ROOT/scripts" \
+    "$FIRMWAVE_ROOT/tests"
 python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
     --start-dir "$ROOT/tests" --label acceptance-reference \
     --summary "$OUTPUT/reference-tests.json" \
     --log "$OUTPUT/reference-tests.log" \
-    --expect-skips 0 --min-tests 46
+    --expect-skips 0 --min-tests 66 \
+    --require-test test_acceptance_gate.AcceptanceGateTests.test_full_manifest_binds_source_qemu_tests_and_firmware_hashes \
+    --require-test test_appliance_smoke.ApplianceSmokeTests.test_complete_appliance_can_bind_every_local_contact_and_stop \
+    --require-test test_firmwave_bundle.FirmwaveBundleTests.test_valid_bundle_binds_source_interface_and_every_artifact \
+    --require-test test_firmwave_dependency.FirmwaveDependencyTests.test_explicit_checkout_resolves_exact_release_identity \
+    --require-test test_runtime_contacts.ContinuousPLContactTests.test_full_50mhz_dual_65536_fft_crosses_the_nsft_wire_contract \
+    --require-test test_usb_contacts.USBCompositeContactTests.test_rndis_ethernet_and_tcp_proxy_reach_iiod
+python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
+    --start-dir "$FIRMWAVE_ROOT/tests" --label acceptance-firmwave \
+    --summary "$OUTPUT/firmwave-tests.json" \
+    --log "$OUTPUT/firmwave-tests.log" \
+    --expect-skips 0 --min-tests 21 \
+    --require-test test_artifacts.ArtifactBoundaryTests.test_rootfs_paths_symlinks_and_uimage_crc_fail_closed \
+    --require-test test_interface_manifest.RuntimeManifestTests.test_manifest_paths_are_relative_and_every_output_is_hashed \
+    --require-test test_provenance_cli.ProvenanceTests.test_state_sha_exactly_matches_twin_acceptance_material_clean_and_dirty \
+    --require-test test_source_boundaries.SourceBoundaryTests.test_no_twin_python_namespace_reference_remains
 if [ "$FIRMWARE" = yes ]; then
     python3 "$ROOT/scripts/acceptance_gate.py" test-suite \
         --start-dir "$ROOT/cosim/tests" --label acceptance-live-cosim \
         --summary "$OUTPUT/cosim-tests.json" \
         --log "$OUTPUT/cosim-tests.log" \
-        --expect-skips 0 --min-tests 22 \
+        --expect-skips 0 --min-tests 23 \
         --require-test test_qemu_device_sources.QEMUDeviceSourceTests.test_sources_compile_with_qemu_10_flags \
+        --require-test test_qemu_fft_source.P210FFTSourceTests.test_qemu_header_refines_the_canonical_firmwave_interface \
         --require-test test_qemu_fft_source.P210FFTSourceTests.test_integrated_qemu_executes_65536_bins_for_two_channels \
         --require-test test_qemu_fft_source.P210FFTSourceTests.test_integrated_qemu_executes_fft_and_rejects_overlap \
         --require-test test_qemu_sdr_live.P210SDRLiveTests.test_xsa_capabilities_alignment_and_pause_readback
@@ -114,18 +135,24 @@ else
         --expect-skip-reason '2:set P210_QEMU_BUILD_DIR to a configured QEMU 10.0.2 build' \
         --expect-skip-reason '13:set P210_QEMU_BINARY to an integrated P210 QEMU binary' \
         --skip-policy source-without-qemu \
-        --min-tests 22
+        --min-tests 23 \
+        --require-test test_qemu_fft_source.P210FFTSourceTests.test_qemu_header_refines_the_canonical_firmwave_interface
 fi
 
 for script in "$ROOT"/scripts/*.sh; do
     bash -n "$script"
 done
+for script in "$FIRMWAVE_ROOT"/scripts/*.sh; do
+    bash -n "$script"
+done
 
-python3 "$ROOT/scripts/test_firmware.py" --fetch --json \
+python3 "$FIRMWAVE_ROOT/scripts/test_firmware.py" \
+    --cache-dir "$FIRMWARE_CACHE" --fetch --json \
     >"$OUTPUT/firmware-artifacts.json"
-python3 -m neptunesdr_twin fetch-firmware p210-system-xsa \
-    "$OUTPUT/system_top.xsa" >"$OUTPUT/xsa-fetch.json"
-python3 -m neptunesdr_twin validate-firmware "$OUTPUT/system_top.xsa" \
+python3 -m neptunesdr_firmwave fetch p210-system-xsa \
+    --cache-dir "$FIRMWARE_CACHE" --json >"$OUTPUT/xsa-fetch.json"
+python3 -m neptunesdr_firmwave validate-xsa \
+    --artifact p210-system-xsa --cache-dir "$FIRMWARE_CACHE" --json \
     >"$OUTPUT/xsa-validation.json"
 python3 -m neptunesdr_twin contracts >"$OUTPUT/contracts.json"
 python3 -m neptunesdr_twin fft-plan >"$OUTPUT/fft-plan.json"
@@ -148,12 +175,14 @@ fi
 
 if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$ROOT" diff --check
+    git -C "$FIRMWAVE_ROOT" diff --check
 fi
 
 if [ "$FIRMWARE" = yes ]; then
     python3 "$ROOT/scripts/acceptance_gate.py" finish-full \
-        --root "$ROOT" --output "$OUTPUT" \
+        --root "$ROOT" --firmwave-root "$FIRMWAVE_ROOT" --output "$OUTPUT" \
         --reference-summary "$OUTPUT/reference-tests.json" \
+        --firmwave-summary "$OUTPUT/firmwave-tests.json" \
         --cosim-summary "$OUTPUT/cosim-tests.json" \
         --qemu "$QEMU_BINARY" --qemu-build-dir "$QEMU_BUILD_DIR" \
         --firmware-log "$OUTPUT/firmware-runtime.log" \
