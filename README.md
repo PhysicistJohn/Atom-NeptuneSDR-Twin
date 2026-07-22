@@ -130,7 +130,8 @@ synthesis/timing remain physical evidence, not blockers to the virtual target.
 ## Contract/reference model
 
 Python 3.9 or newer is required. The reference layer has no third-party Python
-dependencies.
+dependencies. The source gate also reads language-neutral vectors from a
+sibling `../Atom-DSP` checkout; set `ATOM_DSP_ROOT` when it lives elsewhere.
 
 ```sh
 python3 -m venv .venv
@@ -312,10 +313,11 @@ This project does not automatically flash firmware or claim vendor authorization
 
 ## Part of the AtomOS suite
 
-This repository is one of eight AtomOS repositories:
+This repository is one of nine AtomOS repositories:
 
 - [Atom-Atomizer](https://github.com/PhysicistJohn/Atom-Atomizer): AI-native spectrum analyzer application.
 - [Atom-Classifier](https://github.com/PhysicistJohn/Atom-Classifier): deployed local embedding classifier plus retained Bayesian RF research pipeline.
+- [Atom-DSP](https://github.com/PhysicistJohn/Atom-DSP): dependency-free numerical kernels and cross-language conformance vectors.
 - [Atom-Firmware](https://github.com/PhysicistJohn/Atom-Firmware): reproducibly built tinySA firmware research and modernization.
 - [Atom-Flasher](https://github.com/PhysicistJohn/Atom-Flasher): fail-closed firmware flasher.
 - [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): QEMU-backed firmware-executing digital twin of the NeptuneSDR/HAMGEEK P210.
