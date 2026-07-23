@@ -94,3 +94,32 @@ needs either a multi-hour Vivado install on that VM or an x86 CI synthesis
 runner. The synthesized structures (BRAM-registered memory, single
 register-to-register DSP butterfly) are not timing-risk shapes at the 61.44 MHz
 block cadence.
+
+## Real timing closure -- native x86 Vivado (Rosetta stoi bug avoided)
+
+The Rosetta build of Vivado crashes in the Unisim netlist transform, so a full
+29 GB Vivado install was copied VM-to-VM to a native-x86_64 lima VM (both target
+x86-64). Native Vivado sailed past the exact transform that crashed under
+Rosetta ("Unisim Transformation completed", no std::stoi) -- confirming that bug
+was Rosetta-specific -- and produced real WNS/Fmax.
+
+**The first synthesis proved the engine did NOT close timing.** The unpipelined
+butterfly (BRAM read -> 24x18 multiply -> round-half-even -> add -> round ->
+clamp -> BRAM write, all combinational in one clock) has a ~23 ns critical path:
+
+| Engine | Fmax | vs 61.44 MHz cadence |
+|---|---|---|
+| unpipelined | **43.6 MHz** (WNS -17.95 ns @ 5 ns) | FAILS (below cadence) |
+| pipelined (3-stage butterfly) | **107.3 MHz** (WNS -4.32 ns @ 5 ns) | PASSES, 1.75x margin |
+
+The pipeline registers the four DSP products (S_P1), the rounded twiddle results
+(S_P2), and the final add/round/clamp+write (S_WR) into separate stages -- still
+bit-exact to golden (tb_fft_synth.v PASS). Pipelined resource: 4 DSP48E1,
+38 RAMB36, ~950 LUT, 368 FF, 0 errors.
+
+107 MHz clears the 61.44 MHz sample clock the block-cadence operator runs at
+(throughput is multi-cycle by design, not continuous streaming). It does not
+reach 200 MHz -- the remaining ~9 ns path (the round-half-even logic after the
+DSP) would need one more register stage, which is a straightforward addition if
+a higher clock is ever wanted. This is real timing closure at the target
+cadence, measured on the actual part, not asserted.

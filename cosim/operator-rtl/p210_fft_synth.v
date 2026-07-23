@@ -100,11 +100,20 @@ module p210_fft_synth #(
     assign rd_re = q_a_re;
     assign rd_im = q_a_im;
 
-    localparam S_IDLE=0, S_RD=1, S_LAT=2, S_WR=3, S_DONE=4;
+    localparam S_IDLE=0, S_RD=1, S_LAT=2, S_P1=3, S_P2=4, S_WR=5, S_DONE=6;
     reg [2:0]        state;
     reg [4:0]        stage;
     reg signed [17:0] tcos, tsin;
     reg [LOG2N-1:0]  ia_r, ib_r;
+
+    // pipelined butterfly registers (break the long combinational chain that
+    // real synthesis showed does not close timing unpipelined):
+    //   S_P1: register the four DSP products + pass a  (BRAM-out -> multiply)
+    //   S_P2: register tr,ti = rhe(sum,17) + pass a     (rounding stage)
+    //   S_WR: y = clamp(rhe(a +/- tr, 1)); write        (add + round + clamp)
+    reg signed [47:0] pr_brc, pr_bis, pr_bic, pr_brs;   // products
+    reg signed [23:0] ar_p, ai_p, ar_pp, ai_pp;
+    reg signed [47:0] tr_r, ti_r;
 
     // Incremental address generation: no per-butterfly variable shifts (which
     // synthesize to barrel shifters). Per-stage constants half/step/tw_stride
@@ -122,9 +131,6 @@ module p210_fft_synth #(
     wire [14:0]      tw_i = tw_idx;
 
     // butterfly computed directly from the (now valid) BRAM outputs in S_WR
-    wire signed [47:0] tr = rhe($signed(q_b_re)*$signed(tcos) + $signed(q_b_im)*$signed(tsin), 17);
-    wire signed [47:0] ti = rhe($signed(q_b_im)*$signed(tcos) - $signed(q_b_re)*$signed(tsin), 17);
-
     always @(posedge clk) begin
         we_a<=0; we_b<=0;
         if (rst) begin state<=S_IDLE; done<=0; end
@@ -146,10 +152,24 @@ module p210_fft_synth #(
                 ia_r<=ia; ib_r<=ib;
                 state<=S_LAT;
             end
-            S_LAT: state<=S_WR;                        // wait: BRAM data valid next cycle
-            S_WR: begin                                // q_a/q_b valid now; compute + write back
-                we_a<=1; addr_a<=ia_r; din_a_re<=clamp24(rhe($signed(q_a_re)+tr,1)); din_a_im<=clamp24(rhe($signed(q_a_im)+ti,1));
-                we_b<=1; addr_b<=ib_r; din_b_re<=clamp24(rhe($signed(q_a_re)-tr,1)); din_b_im<=clamp24(rhe($signed(q_a_im)-ti,1));
+            S_LAT: state<=S_P1;                        // wait: BRAM data valid next cycle
+            S_P1: begin                                // q valid: register the 4 products + a
+                pr_brc <= $signed(q_b_re)*$signed(tcos);
+                pr_bis <= $signed(q_b_im)*$signed(tsin);
+                pr_bic <= $signed(q_b_im)*$signed(tcos);
+                pr_brs <= $signed(q_b_re)*$signed(tsin);
+                ar_p <= q_a_re; ai_p <= q_a_im;
+                state<=S_P2;
+            end
+            S_P2: begin                                // rounding stage: tr,ti = rhe(sum,17)
+                tr_r <= rhe(pr_brc + pr_bis, 17);
+                ti_r <= rhe(pr_bic - pr_brs, 17);
+                ar_pp <= ar_p; ai_pp <= ai_p;
+                state<=S_WR;
+            end
+            S_WR: begin                                // add +/- , round /2, clamp; write back
+                we_a<=1; addr_a<=ia_r; din_a_re<=clamp24(rhe($signed(ar_pp)+tr_r,1)); din_a_im<=clamp24(rhe($signed(ai_pp)+ti_r,1));
+                we_b<=1; addr_b<=ib_r; din_b_re<=clamp24(rhe($signed(ar_pp)-tr_r,1)); din_b_im<=clamp24(rhe($signed(ai_pp)-ti_r,1));
                 if (p + 1 == half[LOG2N-1:0]) begin         // last butterfly in this group
                     p<=0; tw_idx<=0;
                     if (group_base + step >= N) begin       // last group in this stage
