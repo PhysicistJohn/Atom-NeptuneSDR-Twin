@@ -14,3 +14,4 @@ evidence/*
 
 cosim/operator-core/test_operator_core
 cosim/operator-rtl/tb_fft
+cosim/operator-core/test_operator_device
