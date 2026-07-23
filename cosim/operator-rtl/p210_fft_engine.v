@@ -107,7 +107,10 @@ module p210_fft_engine #(
     wire [LOG2N_MAX:0] n_full = (1 << log2n);
     wire [LOG2N_MAX:0] half_w = (1 << stage);
     wire [LOG2N_MAX:0] step_w = (1 << (stage + 1));
-    wire [14:0] rom_idx = pos[14:0] << (15 - stage);
+    // pos < 2^stage, so pos << (15-stage) < 2^15 and fits the 15-bit ROM index.
+    // Assigned to a 15-bit wire the shift is evaluated at 15-bit width; no slice
+    // of pos is taken (an explicit pos[14:0] would over-select the 11-bit reg).
+    wire [14:0] rom_idx = pos << (15 - stage);
     wire [LOG2N_MAX-1:0] perm_lo = perm_i[LOG2N_MAX-1:0];
     wire [LOG2N_MAX-1:0] perm_rev = bitrev(perm_lo, nbits);
 
