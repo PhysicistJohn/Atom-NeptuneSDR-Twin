@@ -12,6 +12,11 @@ artifacts/
 evidence/*
 !evidence/.gitkeep
 
+# cosim build artifacts (regenerate with the Makefiles / build scripts)
 cosim/operator-core/test_operator_core
-cosim/operator-rtl/tb_fft
 cosim/operator-core/test_operator_device
+cosim/operator-rtl/tb_fft
+cosim/operator-rtl/tb_fft_engine
+cosim/operator-rtl/tb_synth
+cosim/operator-rtl/*.vcd
+cosim/operator-rtl/op_*_256.memh

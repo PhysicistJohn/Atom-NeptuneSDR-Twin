@@ -381,3 +381,7 @@ those files or any downloaded firmware/toolchain input. The corresponding
 license text is in [`LICENSES/GPL-2.0-or-later.txt`](LICENSES/GPL-2.0-or-later.txt).
 Content-addressed third-party artifacts retain their own licenses and
 provenance.
+
+## Operator (v2) reproduce
+
+The spectral neural operator runs in this twin. See [`cosim/REPRODUCE.md`](cosim/REPRODUCE.md) for the full bit-exact chain: Python reference -> C core -> RTL simulation -> the operator executing in QEMU, plus real xc7z020 synthesis.
