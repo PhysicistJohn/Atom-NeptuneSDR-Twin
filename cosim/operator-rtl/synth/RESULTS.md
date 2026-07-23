@@ -66,17 +66,19 @@ LOG2N=10:
 
 | Resource | Used | xc7z020 | % |
 |---|---|---|---|
-| RAMB36E1 | **2** | 140 | 1.4% |
+| RAMB36E1 | 38 | 140 | 27% |
 | DSP48E1 | 4 | 220 | 1.8% |
-| LUT | ~14,000 | 53,200 | 26% |
-| FF (FDRE) | 112 | 106,400 | 0.1% |
+| LUT | **~920** | 53,200 | 1.7% |
+| FF (FDRE) | 164 | 106,400 | 0.2% |
 
-The sample memory now maps to **Block RAM** (2 RAMB36 for re/im at 1024x24) --
-the sim-only engine's async-read array inflated to a register file and OOM'd;
-this one infers BRAM cleanly. The LUT count is dominated by barrel shifters from
-the runtime `stage` shifts in address generation (`<< stage`, `>> stage`,
-`<< (15-stage)`); a pipelined engine with per-stage precomputed strides removes
-most of them. It fits comfortably as-is.
+Address generation is incremental (per-stage constants maintained by
+doubling/halving, `ia`/`ib` as adders, `tw_idx` as an accumulator), so there are
+no per-butterfly variable shifts. This cut LUTs from ~14,000 (the first,
+shift-based version) to ~920, and moved the twiddle ROM out of LUTs into Block
+RAM where it belongs. BRAM is now dominated by the full-resolution twiddle ROM
+(32768 half-turn entries, sized for N-invariance up to 65536) plus the sample
+memory; a fixed-small-N deployment could subsample the ROM to a few BRAM. Fits
+the device (38/140 BRAM). Still bit-exact to golden (tb_fft_synth.v PASS).
 
 A full single-channel operator = this engine (2 BRAM, 4 DSP) + the spectral
 multiply and modReLU (a few more DSP, see the ALU) + weight-table BRAM -- a

@@ -103,16 +103,23 @@ module p210_fft_synth #(
     localparam S_IDLE=0, S_RD=1, S_LAT=2, S_WR=3, S_DONE=4;
     reg [2:0]        state;
     reg [4:0]        stage;
-    reg [LOG2N-1:0]  cnt;
     reg signed [17:0] tcos, tsin;
     reg [LOG2N-1:0]  ia_r, ib_r;
 
-    wire [LOG2N-1:0] half  = (1 << stage);
-    wire [LOG2N-1:0] p_idx = cnt & (half - 1);
-    wire [LOG2N-1:0] g_idx = cnt >> stage;
-    wire [LOG2N-1:0] ia    = (g_idx << (stage + 1)) | p_idx;
-    wire [LOG2N-1:0] ib    = ia | half;
-    wire [14:0]      tw_i  = p_idx << (15 - stage);
+    // Incremental address generation: no per-butterfly variable shifts (which
+    // synthesize to barrel shifters). Per-stage constants half/step/tw_stride
+    // are maintained by doubling/halving once per stage; ia/ib are adds and
+    // tw_idx is an accumulator. Bit-identical butterfly order to the shift-based
+    // decode: ia = group_base + p, ib = ia + half, tw = p * tw_stride.
+    reg [LOG2N:0]    half, step;      // 2^stage, 2^(stage+1)
+    reg [15:0]       tw_stride;       // 2^(15-stage)
+    reg [LOG2N:0]    group_base;
+    reg [LOG2N-1:0]  p;
+    reg [14:0]       tw_idx;
+
+    wire [LOG2N-1:0] ia   = group_base[LOG2N-1:0] + p;
+    wire [LOG2N-1:0] ib   = group_base[LOG2N-1:0] + p + half[LOG2N-1:0];
+    wire [14:0]      tw_i = tw_idx;
 
     // butterfly computed directly from the (now valid) BRAM outputs in S_WR
     wire signed [47:0] tr = rhe($signed(q_b_re)*$signed(tcos) + $signed(q_b_im)*$signed(tsin), 17);
@@ -127,7 +134,11 @@ module p210_fft_synth #(
                 done<=0;
                 if (ld_we) begin we_a<=1; addr_a<=bitrev(io_addr); din_a_re<=ld_re; din_a_im<=ld_im; end
                 else addr_a<=io_addr;                 // host read port
-                if (start) begin stage<=0; cnt<=0; state<=S_RD; end
+                if (start) begin
+                    stage<=0; half<=1; step<=2; tw_stride<=15'sd0 + (1<<15);
+                    group_base<=0; p<=0; tw_idx<=0;
+                    state<=S_RD;
+                end
             end
             S_RD: begin                                // issue read of ia, ib (2-cycle sync path)
                 addr_a<=ia; addr_b<=ib;
@@ -139,11 +150,19 @@ module p210_fft_synth #(
             S_WR: begin                                // q_a/q_b valid now; compute + write back
                 we_a<=1; addr_a<=ia_r; din_a_re<=clamp24(rhe($signed(q_a_re)+tr,1)); din_a_im<=clamp24(rhe($signed(q_a_im)+ti,1));
                 we_b<=1; addr_b<=ib_r; din_b_re<=clamp24(rhe($signed(q_a_re)-tr,1)); din_b_im<=clamp24(rhe($signed(q_a_im)-ti,1));
-                if (cnt == HALFN[LOG2N-1:0]-1) begin
-                    if (stage == LOG2N-1) state<=S_DONE;
-                    else begin stage<=stage+1; cnt<=0; state<=S_RD; end
+                if (p + 1 == half[LOG2N-1:0]) begin         // last butterfly in this group
+                    p<=0; tw_idx<=0;
+                    if (group_base + step >= N) begin       // last group in this stage
+                        if (stage == LOG2N-1) state<=S_DONE;
+                        else begin
+                            stage<=stage+1; half<=half<<1; step<=step<<1;
+                            tw_stride<=tw_stride>>1; group_base<=0; state<=S_RD;
+                        end
+                    end else begin
+                        group_base<=group_base+step; state<=S_RD;
+                    end
                 end else begin
-                    cnt<=cnt+1; state<=S_RD;
+                    p<=p+1; tw_idx<=tw_idx+tw_stride; state<=S_RD;
                 end
             end
             S_DONE: begin done<=1; addr_a<=io_addr; if (start) state<=S_DONE; else state<=S_IDLE; end
