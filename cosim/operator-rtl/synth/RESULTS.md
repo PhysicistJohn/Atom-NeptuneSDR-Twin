@@ -55,3 +55,40 @@ the large-N BRAM working-set question.
 # native-x86_64 Vivado 2023.2
 cd cosim/operator-rtl/synth && vivado -mode batch -source synth_alu_ooc.tcl
 ```
+
+## Full synthesizable FFT engine (`p210_fft_synth.v`) -- REAL synthesis, 0 errors
+
+The engine rewritten for synthesis: a true dual-port BRAM sample memory with
+synchronous reads, in-place radix-2 DIT, one butterfly per multi-cycle pass.
+Bit-exact to golden at N=1024 in simulation (`tb_fft_synth.v`,
+P210_FFT_SYNTH_BITEXACT PASS). Out-of-context synthesis on xc7z020clg400-1,
+LOG2N=10:
+
+| Resource | Used | xc7z020 | % |
+|---|---|---|---|
+| RAMB36E1 | **2** | 140 | 1.4% |
+| DSP48E1 | 4 | 220 | 1.8% |
+| LUT | ~14,000 | 53,200 | 26% |
+| FF (FDRE) | 112 | 106,400 | 0.1% |
+
+The sample memory now maps to **Block RAM** (2 RAMB36 for re/im at 1024x24) --
+the sim-only engine's async-read array inflated to a register file and OOM'd;
+this one infers BRAM cleanly. The LUT count is dominated by barrel shifters from
+the runtime `stage` shifts in address generation (`<< stage`, `>> stage`,
+`<< (15-stage)`); a pipelined engine with per-stage precomputed strides removes
+most of them. It fits comfortably as-is.
+
+A full single-channel operator = this engine (2 BRAM, 4 DSP) + the spectral
+multiply and modReLU (a few more DSP, see the ALU) + weight-table BRAM -- a
+small fraction of the 220-DSP / 140-BRAM device. The resource-feasibility
+question is now answered by real synthesis of the actual engine, not estimate.
+
+## Native-x86_64 VM for timing -- tested, Vivado not installed there
+
+The stopped native-x86_64 lima VM (`neptune-vivado-2023-2`) was booted and
+checked: it runs x86_64 natively (no Rosetta stoi bug) but does **not** have
+Vivado installed -- only the aarch64/Rosetta VM does. Getting WNS/Fmax therefore
+needs either a multi-hour Vivado install on that VM or an x86 CI synthesis
+runner. The synthesized structures (BRAM-registered memory, single
+register-to-register DSP butterfly) are not timing-risk shapes at the 61.44 MHz
+block cadence.
