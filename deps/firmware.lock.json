@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "profile": "qemu-development",
+  "repository": {
+    "url": "https://github.com/PhysicistJohn/Atom-NeptuneSDR-Firmware.git",
+    "commit": "5a3f8766edeb7852da930344c66c30593e8782ef",
+    "tree": "7ed1a2fd31fb550e6df74587dcb172c4fd867185"
+  },
+  "interface": {
+    "path": "specs/p210-firmware-interface-v1.json",
+    "sha256": "6f2ff43d0e0e6e6efd7ad417bbf3449316b12af5a24c5ca89f1d6be5bb6fc808"
+  }
+}

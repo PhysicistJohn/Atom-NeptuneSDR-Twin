@@ -40,7 +40,7 @@ benefits. Until then it remains Twin code, not an upstream-ready change.
 ## Community P210 material: open an issue before proposing code
 
 The public `wucke13/Neptune-SDR-nix-utils` artifacts are the source of the
-kernel/device-tree/XSA evidence consumed by Firmwave. The useful upstream action
+kernel/device-tree/XSA evidence consumed by Firmware. The useful upstream action
 is an evidence-focused issue first: ask for the exact P210 hardware revision,
 artifact provenance/build recipe, the missing full rootfs or factory-image
 boundary, and clarification of the reported non-functional AD9361 path. A code
@@ -51,7 +51,7 @@ physical revision can reproduce the change.
 
 - **libiio:** the pinned official client and released guest `iiod` interoperate;
   no generic library defect was isolated.
-- **Analog Devices `plutosdr-fw`:** Firmwave reuses the official v0.39 rootfs as
+- **Analog Devices `plutosdr-fw`:** Firmware reuses the official v0.39 rootfs as
   a hash-locked compatibility input. The P210 composition is not a PlutoSDR
   firmware bug or a replacement image to contribute upstream.
 - **Analog Devices HDL:** the proposed FFT ABI and QEMU model are not synthesized
@@ -71,7 +71,7 @@ These changes express Neptune/P210-specific contracts and should remain local:
   the Twin;
 - the ARM NSFT streamer, immutable input locks, XSA audit, canonical FFT ABI,
   and non-flashable public-P210-kernel plus Pluto-v0.39-rootfs composition in
-  [`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave).
+  [`Atom-NeptuneSDR-Firmware`](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Firmware).
 
 The proposed FFT is not present in the pinned public bitstream. Upstreaming its
 model as a statement about shipped P210 hardware would be misleading.
@@ -93,7 +93,7 @@ Linux, libiio, QEMU, or Analog Devices documentation.
 Submit an upstream fix only when all four are true:
 
 1. the fault is in upstream-owned generic behavior rather than the Twin or
-   Firmwave contract;
+   Firmware contract;
 2. a minimal public reproducer fails without P210-specific artifacts;
 3. the correction has a focused regression test and preserves migration/API
    compatibility where required; and

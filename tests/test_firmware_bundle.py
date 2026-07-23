@@ -1,4 +1,4 @@
-"""Fail-closed tests for the Firmwave runtime-bundle trust boundary."""
+"""Fail-closed tests for the Firmware runtime-bundle trust boundary."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "verify_firmwave_bundle.py"
-SPEC = importlib.util.spec_from_file_location("verify_firmwave_bundle", SCRIPT)
+SCRIPT = ROOT / "scripts" / "verify_firmware_bundle.py"
+SPEC = importlib.util.spec_from_file_location("verify_firmware_bundle", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 verifier = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = verifier
@@ -38,7 +38,7 @@ def _git(root: Path, *arguments: str) -> str:
 
 
 class BundleFixture:
-    """A minimal clean Firmwave checkout and its self-describing runtime."""
+    """A minimal clean Firmware checkout and its self-describing runtime."""
 
     ARTIFACTS = {
         "kernel": ("p210-kernel.bin", b"fixture P210 kernel\n", "P210 Linux kernel"),
@@ -60,13 +60,13 @@ class BundleFixture:
     }
 
     def __init__(self, base: Path) -> None:
-        self.firmwave_root = base / "Atom-NeptuneSDR_Firmwave"
+        self.firmware_root = base / "Atom-NeptuneSDR-Firmware"
         self.runtime = base / "runtime"
-        self.lock_path = base / "firmwave.lock.json"
-        self.firmwave_root.mkdir()
+        self.lock_path = base / "firmware.lock.json"
+        self.firmware_root.mkdir()
         self.runtime.mkdir()
 
-        interface = self.firmwave_root / "specs" / "p210-firmware-interface-v1.json"
+        interface = self.firmware_root / "specs" / "p210-firmware-interface-v1.json"
         interface.parent.mkdir()
         interface.write_text(
             json.dumps(
@@ -87,12 +87,12 @@ class BundleFixture:
             + "\n",
             encoding="utf-8",
         )
-        _git(self.firmwave_root, "init", "--quiet")
-        _git(self.firmwave_root, "add", ".")
+        _git(self.firmware_root, "init", "--quiet")
+        _git(self.firmware_root, "add", ".")
         _git(
-            self.firmwave_root,
+            self.firmware_root,
             "-c",
-            "user.name=Firmwave Bundle Test",
+            "user.name=Firmware Bundle Test",
             "-c",
             "user.email=bundle@example.invalid",
             "commit",
@@ -101,22 +101,22 @@ class BundleFixture:
             "fixture",
         )
 
-        current = verifier._source_state(self.firmwave_root)
-        tree = _git(self.firmwave_root, "rev-parse", "HEAD^{tree}")
+        current = verifier._source_state(self.firmware_root)
+        tree = _git(self.firmware_root, "rev-parse", "HEAD^{tree}")
         self.source = {
-            "repository": "Atom-NeptuneSDR_Firmwave",
+            "repository": "Atom-NeptuneSDR-Firmware",
             "commit": current["commit"],
             "tree": tree,
             "state_sha256": current["state_sha256"],
             "clean": True,
         }
-        interface_path = interface.relative_to(self.firmwave_root).as_posix()
+        interface_path = interface.relative_to(self.firmware_root).as_posix()
         interface_sha = _sha256(interface)
         self.lock = {
             "schema_version": 1,
             "profile": "qemu-development",
             "repository": {
-                "url": "https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave.git",
+                "url": "https://github.com/PhysicistJohn/Atom-NeptuneSDR-Firmware.git",
                 "commit": current["commit"],
                 "tree": tree,
             },
@@ -142,7 +142,7 @@ class BundleFixture:
             "profile": "qemu-development",
             "flashable": False,
             "artifact_hashes_complete": True,
-            "firmwave_source": self.source,
+            "firmware_source": self.source,
             "interface": {
                 "schema": verifier.INTERFACE_SCHEMA,
                 "path": interface_path,
@@ -164,15 +164,15 @@ class BundleFixture:
 
     def verify(self):
         return verifier.verify_bundle(
-            self.firmwave_root,
+            self.firmware_root,
             self.runtime,
             self.lock_path,
         )
 
 
-class FirmwaveBundleTests(unittest.TestCase):
+class FirmwareBundleTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="firmwave-bundle-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="firmware-bundle-")
         self.fixture = BundleFixture(Path(self.temporary.name))
 
     def tearDown(self) -> None:
@@ -190,12 +190,12 @@ class FirmwaveBundleTests(unittest.TestCase):
             self.fixture.lock["interface"]["sha256"],
         )
 
-    def test_dirty_firmwave_source_is_rejected(self) -> None:
-        (self.fixture.firmwave_root / "untracked-work.txt").write_text(
+    def test_dirty_firmware_source_is_rejected(self) -> None:
+        (self.fixture.firmware_root / "untracked-work.txt").write_text(
             "must not enter evidence\n", encoding="utf-8"
         )
-        dirty = verifier._source_state(self.fixture.firmwave_root)
-        self.fixture.manifest["firmwave_source"]["state_sha256"] = dirty[
+        dirty = verifier._source_state(self.fixture.firmware_root)
+        self.fixture.manifest["firmware_source"]["state_sha256"] = dirty[
             "state_sha256"
         ]
         self.fixture.write_manifest()

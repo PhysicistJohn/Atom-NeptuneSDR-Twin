@@ -61,15 +61,15 @@ class AcceptanceGateTests(unittest.TestCase):
                 prefix="gate-hidden-index-"
             ) as directory:
                 root = Path(directory) / "repo"
-                firmwave_root = Path(directory) / "firmwave"
+                firmware_root = Path(directory) / "firmware"
                 _init_repository(root, ignored=".evidence/\n")
-                _init_repository(firmwave_root)
+                _init_repository(firmware_root)
 
                 baseline_output = root / ".evidence" / "baseline"
                 baseline = _run(
                     "start",
                     "--root", str(root),
-                    "--firmwave-root", str(firmwave_root),
+                    "--firmware-root", str(firmware_root),
                     "--output", str(baseline_output),
                     "--run-id", "baseline",
                     "--mode", "source",
@@ -100,7 +100,7 @@ class AcceptanceGateTests(unittest.TestCase):
                 flagged = _run(
                     "start",
                     "--root", str(root),
-                    "--firmwave-root", str(firmwave_root),
+                    "--firmware-root", str(firmware_root),
                     "--output", str(flagged_output),
                     "--run-id", "flagged",
                     "--mode", "source",
@@ -122,7 +122,7 @@ class AcceptanceGateTests(unittest.TestCase):
                 full = _run(
                     "start",
                     "--root", str(root),
-                    "--firmwave-root", str(firmwave_root),
+                    "--firmware-root", str(firmware_root),
                     "--output", str(root / ".evidence" / "full"),
                     "--run-id", "full",
                     "--mode", "full",
@@ -131,25 +131,25 @@ class AcceptanceGateTests(unittest.TestCase):
                 self.assertNotEqual(full.returncode, 0, full.stdout)
                 self.assertIn("hidden Git index flags", full.stdout)
 
-    def test_full_acceptance_requires_clean_twin_and_firmwave(self) -> None:
+    def test_full_acceptance_requires_clean_twin_and_firmware(self) -> None:
         for dirty_repository, expected in (
             ("twin", "Twin repository must be clean for full acceptance"),
-            ("firmwave", "Firmwave repository must be clean for full acceptance"),
+            ("firmware", "Firmware repository must be clean for full acceptance"),
         ):
             with self.subTest(repository=dirty_repository), tempfile.TemporaryDirectory(
                 prefix="gate-clean-source-"
             ) as directory:
                 root = Path(directory) / "repo"
-                firmwave_root = Path(directory) / "firmwave"
+                firmware_root = Path(directory) / "firmware"
                 _init_repository(root)
-                _init_repository(firmwave_root)
-                dirty_root = root if dirty_repository == "twin" else firmwave_root
+                _init_repository(firmware_root)
+                dirty_root = root if dirty_repository == "twin" else firmware_root
                 (dirty_root / "source.txt").write_text("uncommitted source\n")
 
                 result = _run(
                     "start",
                     "--root", str(root),
-                    "--firmwave-root", str(firmwave_root),
+                    "--firmware-root", str(firmware_root),
                     "--output", str(Path(directory) / "evidence"),
                     "--run-id", "dirty",
                     "--mode", "full",
@@ -163,9 +163,9 @@ class AcceptanceGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gate-build-cache-") as directory:
             temporary = Path(directory)
             root = temporary / "repo"
-            firmwave_root = temporary / "firmwave"
+            firmware_root = temporary / "firmware"
             _init_repository(root)
-            _init_repository(firmwave_root)
+            _init_repository(firmware_root)
             qemu = temporary / "qemu-system-arm"
             guest = temporary / "neptune-fft-streamer"
             iio_info = temporary / "iio_info"
@@ -181,7 +181,7 @@ class AcceptanceGateTests(unittest.TestCase):
             binding = temporary / "p210-runtime-build-identity.json"
             common = (
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--qemu", str(qemu),
                 "--guest", str(guest),
                 "--iio-info", str(iio_info),
@@ -194,7 +194,7 @@ class AcceptanceGateTests(unittest.TestCase):
             self.assertEqual(written.returncode, 0, written.stdout)
             payload = json.loads(binding.read_text(encoding="utf-8"))
             self.assertEqual(payload["schema"], "atom-neptune-build-cache-v1")
-            self.assertEqual(set(payload["sources"]), {"twin", "firmwave"})
+            self.assertEqual(set(payload["sources"]), {"twin", "firmware"})
             self.assertEqual(
                 set(payload["artifacts"]),
                 {
@@ -231,14 +231,14 @@ class AcceptanceGateTests(unittest.TestCase):
             self.assertIn("twin source", rejected_twin.stdout)
             (root / "source.txt").write_text("tested source\n", encoding="utf-8")
 
-            (firmwave_root / "source.txt").write_text(
-                "changed Firmwave source\n", encoding="utf-8"
+            (firmware_root / "source.txt").write_text(
+                "changed Firmware source\n", encoding="utf-8"
             )
-            rejected_firmwave = _run("verify-build-cache", *common)
+            rejected_firmware = _run("verify-build-cache", *common)
             self.assertNotEqual(
-                rejected_firmwave.returncode, 0, rejected_firmwave.stdout
+                rejected_firmware.returncode, 0, rejected_firmware.stdout
             )
-            self.assertIn("firmwave source", rejected_firmwave.stdout)
+            self.assertIn("firmware source", rejected_firmware.stdout)
 
             launcher = (ROOT / "scripts" / "run_p210_firmware.sh").read_text(
                 encoding="utf-8"
@@ -348,16 +348,16 @@ class AcceptanceGateTests(unittest.TestCase):
     def test_full_manifest_binds_source_qemu_tests_and_firmware_hashes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="gate-manifest-") as directory:
             root = Path(directory) / "repo"
-            firmwave_root = Path(directory) / "firmwave"
+            firmware_root = Path(directory) / "firmware"
             _init_repository(root, ignored=".evidence/\n.qemu-build/\n")
-            _init_repository(firmwave_root)
+            _init_repository(firmware_root)
             output = root / ".evidence" / "run-1"
             started = _run(
                 "start",
                 "--root",
                 str(root),
-                "--firmwave-root",
-                str(firmwave_root),
+                "--firmware-root",
+                str(firmware_root),
                 "--output",
                 str(output),
                 "--run-id",
@@ -371,12 +371,12 @@ class AcceptanceGateTests(unittest.TestCase):
                 (output / "run-state.json").read_text(encoding="utf-8")
             )
             self.assertEqual(
-                run_state["sources"]["firmwave"]["repository"],
-                "Atom-NeptuneSDR_Firmwave",
+                run_state["sources"]["firmware"]["repository"],
+                "Atom-NeptuneSDR-Firmware",
             )
             self.assertEqual(run_state["source"], run_state["sources"]["twin"])
-            firmwave_identity = {
-                key: run_state["sources"]["firmwave"][key]
+            firmware_identity = {
+                key: run_state["sources"]["firmware"][key]
                 for key in ("repository", "commit", "state_sha256")
             }
 
@@ -408,7 +408,7 @@ class AcceptanceGateTests(unittest.TestCase):
                 json.dumps({**summary, "qemu_environment": qemu_identity}),
                 encoding="utf-8",
             )
-            (output / "firmwave.json").write_text(
+            (output / "firmware.json").write_text(
                 json.dumps(summary), encoding="utf-8"
             )
             firmware_log = output / "firmware-runtime.log"
@@ -433,7 +433,7 @@ class AcceptanceGateTests(unittest.TestCase):
                             "cpu_count": 2,
                             "memory_bytes": 536_870_912,
                         },
-                        "firmwave_source": firmwave_identity,
+                        "firmware_source": firmware_identity,
                     }
                 )
             )
@@ -499,11 +499,11 @@ class AcceptanceGateTests(unittest.TestCase):
             rejected = _run(
                 "finish-full",
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--output", str(output),
                 "--reference-summary", str(output / "reference.json"),
                 "--cosim-summary", str(output / "cosim.json"),
-                "--firmwave-summary", str(output / "firmwave.json"),
+                "--firmware-summary", str(output / "firmware.json"),
                 "--qemu", str(qemu),
                 "--qemu-build-dir", str(qemu_build),
                 "--firmware-log", str(firmware_log),
@@ -514,20 +514,20 @@ class AcceptanceGateTests(unittest.TestCase):
             self.assertFalse((output / "acceptance-manifest.json").exists())
             (runtime / "p210-qemu-fft-report.json").write_text(json.dumps(report))
 
-            # Firmwave's own test evidence is mandatory and independently
+            # Firmware's own test evidence is mandatory and independently
             # fail-closed; a failed gate or any skip cannot be hidden behind
             # otherwise valid Twin/QEMU/firmware evidence.
-            (output / "firmwave.json").write_text(
+            (output / "firmware.json").write_text(
                 json.dumps({**summary, "gate_pass": False}), encoding="utf-8"
             )
             rejected = _run(
                 "finish-full",
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--output", str(output),
                 "--reference-summary", str(output / "reference.json"),
                 "--cosim-summary", str(output / "cosim.json"),
-                "--firmwave-summary", str(output / "firmwave.json"),
+                "--firmware-summary", str(output / "firmware.json"),
                 "--qemu", str(qemu),
                 "--qemu-build-dir", str(qemu_build),
                 "--firmware-log", str(firmware_log),
@@ -535,24 +535,24 @@ class AcceptanceGateTests(unittest.TestCase):
                 cwd=root,
             )
             self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
-            self.assertIn("firmwave test summary is not a passing gate", rejected.stdout)
+            self.assertIn("firmware test summary is not a passing gate", rejected.stdout)
             self.assertFalse((output / "acceptance-manifest.json").exists())
 
-            skipped_firmwave = {
+            skipped_firmware = {
                 **summary,
                 "results": {"tests_run": 1, "skipped": 1},
             }
-            (output / "firmwave.json").write_text(
-                json.dumps(skipped_firmwave), encoding="utf-8"
+            (output / "firmware.json").write_text(
+                json.dumps(skipped_firmware), encoding="utf-8"
             )
             rejected = _run(
                 "finish-full",
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--output", str(output),
                 "--reference-summary", str(output / "reference.json"),
                 "--cosim-summary", str(output / "cosim.json"),
-                "--firmwave-summary", str(output / "firmwave.json"),
+                "--firmware-summary", str(output / "firmware.json"),
                 "--qemu", str(qemu),
                 "--qemu-build-dir", str(qemu_build),
                 "--firmware-log", str(firmware_log),
@@ -560,24 +560,24 @@ class AcceptanceGateTests(unittest.TestCase):
                 cwd=root,
             )
             self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
-            self.assertIn("Firmwave suite contains skipped tests", rejected.stdout)
+            self.assertIn("Firmware suite contains skipped tests", rejected.stdout)
             self.assertFalse((output / "acceptance-manifest.json").exists())
-            (output / "firmwave.json").write_text(
+            (output / "firmware.json").write_text(
                 json.dumps(summary), encoding="utf-8"
             )
 
             runtime_manifest_path = runtime / "runtime-manifest.json"
             runtime_manifest = json.loads(runtime_manifest_path.read_text())
-            del runtime_manifest["firmwave_source"]
+            del runtime_manifest["firmware_source"]
             runtime_manifest_path.write_text(json.dumps(runtime_manifest))
             rejected = _run(
                 "finish-full",
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--output", str(output),
                 "--reference-summary", str(output / "reference.json"),
                 "--cosim-summary", str(output / "cosim.json"),
-                "--firmwave-summary", str(output / "firmwave.json"),
+                "--firmware-summary", str(output / "firmware.json"),
                 "--qemu", str(qemu),
                 "--qemu-build-dir", str(qemu_build),
                 "--firmware-log", str(firmware_log),
@@ -585,24 +585,24 @@ class AcceptanceGateTests(unittest.TestCase):
                 cwd=root,
             )
             self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
-            self.assertIn("no Firmwave source identity", rejected.stdout)
+            self.assertIn("no Firmware source identity", rejected.stdout)
             self.assertFalse((output / "acceptance-manifest.json").exists())
 
-            # Firmware evidence from a different Firmwave revision/state must
+            # Firmware evidence from a different Firmware revision/state must
             # not be accepted even if its runtime behavior happens to pass.
-            runtime_manifest["firmwave_source"] = {
-                **firmwave_identity,
+            runtime_manifest["firmware_source"] = {
+                **firmware_identity,
                 "commit": "0" * 40,
             }
             runtime_manifest_path.write_text(json.dumps(runtime_manifest))
             rejected = _run(
                 "finish-full",
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--output", str(output),
                 "--reference-summary", str(output / "reference.json"),
                 "--cosim-summary", str(output / "cosim.json"),
-                "--firmwave-summary", str(output / "firmwave.json"),
+                "--firmware-summary", str(output / "firmware.json"),
                 "--qemu", str(qemu),
                 "--qemu-build-dir", str(qemu_build),
                 "--firmware-log", str(firmware_log),
@@ -610,25 +610,25 @@ class AcceptanceGateTests(unittest.TestCase):
                 cwd=root,
             )
             self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
-            self.assertIn("Firmwave commit", rejected.stdout)
+            self.assertIn("Firmware commit", rejected.stdout)
             self.assertFalse((output / "acceptance-manifest.json").exists())
-            runtime_manifest["firmwave_source"] = firmwave_identity
+            runtime_manifest["firmware_source"] = firmware_identity
             runtime_manifest_path.write_text(json.dumps(runtime_manifest))
 
             finished = _run(
                 "finish-full",
                 "--root",
                 str(root),
-                "--firmwave-root",
-                str(firmwave_root),
+                "--firmware-root",
+                str(firmware_root),
                 "--output",
                 str(output),
                 "--reference-summary",
                 str(output / "reference.json"),
                 "--cosim-summary",
                 str(output / "cosim.json"),
-                "--firmwave-summary",
-                str(output / "firmwave.json"),
+                "--firmware-summary",
+                str(output / "firmware.json"),
                 "--qemu",
                 str(qemu),
                 "--qemu-build-dir",
@@ -649,15 +649,15 @@ class AcceptanceGateTests(unittest.TestCase):
             self.assertEqual(manifest["source"]["commit"], commit)
             self.assertEqual(manifest["sources"]["twin"], manifest["source"])
             self.assertEqual(
-                manifest["sources"]["firmwave"]["commit"],
-                firmwave_identity["commit"],
+                manifest["sources"]["firmware"]["commit"],
+                firmware_identity["commit"],
             )
             self.assertEqual(
-                manifest["firmware"]["firmwave_source"]["state_sha256"],
-                firmwave_identity["state_sha256"],
+                manifest["firmware"]["firmware_source"]["state_sha256"],
+                firmware_identity["state_sha256"],
             )
             self.assertEqual(manifest["tests"]["total_skipped"], 0)
-            self.assertEqual(manifest["tests"]["firmwave"], summary)
+            self.assertEqual(manifest["tests"]["firmware"], summary)
             self.assertEqual(manifest["tests"]["total_run"], 3)
             self.assertTrue(manifest["firmware"]["pass"])
             self.assertEqual(
@@ -674,17 +674,17 @@ class AcceptanceGateTests(unittest.TestCase):
     def test_manifest_rejects_source_changed_after_run_start(self) -> None:
         with tempfile.TemporaryDirectory(prefix="gate-stale-") as directory:
             root = Path(directory) / "repo"
-            firmwave_root = Path(directory) / "firmwave"
+            firmware_root = Path(directory) / "firmware"
             _init_repository(root, ignored=".evidence/\n")
-            _init_repository(firmwave_root)
+            _init_repository(firmware_root)
             source = root / "source.txt"
             output = root / ".evidence"
             result = _run(
                 "start",
                 "--root",
                 str(root),
-                "--firmwave-root",
-                str(firmwave_root),
+                "--firmware-root",
+                str(firmware_root),
                 "--output",
                 str(output),
                 "--run-id",
@@ -701,16 +701,16 @@ class AcceptanceGateTests(unittest.TestCase):
                 "finish-full",
                 "--root",
                 str(root),
-                "--firmwave-root",
-                str(firmwave_root),
+                "--firmware-root",
+                str(firmware_root),
                 "--output",
                 str(output),
                 "--reference-summary",
                 str(output / "missing-reference.json"),
                 "--cosim-summary",
                 str(output / "missing-cosim.json"),
-                "--firmwave-summary",
-                str(output / "missing-firmwave.json"),
+                "--firmware-summary",
+                str(output / "missing-firmware.json"),
                 "--qemu",
                 str(root / "missing-qemu"),
                 "--qemu-build-dir",
@@ -725,32 +725,32 @@ class AcceptanceGateTests(unittest.TestCase):
             self.assertIn("source state changed", result.stdout)
             self.assertFalse((output / "acceptance-manifest.json").exists())
 
-    def test_manifest_rejects_firmwave_changed_after_run_start(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="gate-firmwave-stale-") as directory:
+    def test_manifest_rejects_firmware_changed_after_run_start(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-firmware-stale-") as directory:
             root = Path(directory) / "repo"
-            firmwave_root = Path(directory) / "firmwave"
+            firmware_root = Path(directory) / "firmware"
             _init_repository(root, ignored=".evidence/\n")
-            _init_repository(firmwave_root)
+            _init_repository(firmware_root)
             output = root / ".evidence"
             result = _run(
                 "start",
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--output", str(output),
-                "--run-id", "firmwave-stale",
+                "--run-id", "firmware-stale",
                 "--mode", "full",
                 cwd=root,
             )
             self.assertEqual(result.returncode, 0, result.stdout)
-            (firmwave_root / "source.txt").write_text("changed Firmwave\n")
+            (firmware_root / "source.txt").write_text("changed Firmware\n")
             result = _run(
                 "finish-full",
                 "--root", str(root),
-                "--firmwave-root", str(firmwave_root),
+                "--firmware-root", str(firmware_root),
                 "--output", str(output),
                 "--reference-summary", str(output / "missing-reference.json"),
                 "--cosim-summary", str(output / "missing-cosim.json"),
-                "--firmwave-summary", str(output / "missing-firmwave.json"),
+                "--firmware-summary", str(output / "missing-firmware.json"),
                 "--qemu", str(root / "missing-qemu"),
                 "--qemu-build-dir", str(root / "missing-build"),
                 "--firmware-log", str(output / "missing-runtime.log"),
@@ -758,7 +758,7 @@ class AcceptanceGateTests(unittest.TestCase):
                 cwd=root,
             )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Firmwave repository source state changed", result.stdout)
+            self.assertIn("Firmware repository source state changed", result.stdout)
             self.assertFalse((output / "acceptance-manifest.json").exists())
 
 

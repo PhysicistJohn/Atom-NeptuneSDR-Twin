@@ -1,4 +1,4 @@
-"""Trust-boundary tests for the locked cross-repository Firmwave dependency."""
+"""Trust-boundary tests for the locked cross-repository Firmware dependency."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "resolve_firmwave.py"
-SPEC = importlib.util.spec_from_file_location("resolve_firmwave", SCRIPT)
+SCRIPT = ROOT / "scripts" / "resolve_firmware.py"
+SPEC = importlib.util.spec_from_file_location("resolve_firmware", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 resolver = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = resolver
@@ -31,9 +31,9 @@ def git(root: Path, *arguments: str) -> str:
         text=True,
         env={
             **os.environ,
-            "GIT_AUTHOR_NAME": "Firmwave Resolver Test",
+            "GIT_AUTHOR_NAME": "Firmware Resolver Test",
             "GIT_AUTHOR_EMAIL": "resolver@example.invalid",
-            "GIT_COMMITTER_NAME": "Firmwave Resolver Test",
+            "GIT_COMMITTER_NAME": "Firmware Resolver Test",
             "GIT_COMMITTER_EMAIL": "resolver@example.invalid",
         },
     )
@@ -48,7 +48,7 @@ class Fixture:
         git(self.remote, "init", "--quiet")
         interface = self.remote / "specs" / "twin-interface.json"
         interface.parent.mkdir()
-        interface.write_text('{"schema":"neptune-firmwave-twin-v1"}\n', encoding="utf-8")
+        interface.write_text('{"schema":"neptune-firmware-twin-v1"}\n', encoding="utf-8")
         payload = self.remote / "firmware" / "runtime.txt"
         payload.parent.mkdir()
         payload.write_text("trusted runtime\n", encoding="utf-8")
@@ -57,7 +57,7 @@ class Fixture:
         self.commit = git(self.remote, "rev-parse", "HEAD")
         self.tree = git(self.remote, "rev-parse", "HEAD^{tree}")
         self.interface_sha = hashlib.sha256(interface.read_bytes()).hexdigest()
-        self.lock_path = base / "firmwave.lock.json"
+        self.lock_path = base / "firmware.lock.json"
         self.write_lock()
 
     def write_lock(self, **changes: object) -> None:
@@ -90,7 +90,7 @@ class Fixture:
         return checkout
 
 
-class FirmwaveDependencyTests(unittest.TestCase):
+class FirmwareDependencyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name)
@@ -109,7 +109,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
             "offline": True,
         }
         arguments.update(kwargs)
-        return resolver.resolve_firmwave(**arguments)
+        return resolver.resolve_firmware(**arguments)
 
     def test_explicit_checkout_resolves_exact_release_identity(self):
         checkout = self.fixture.clone()
@@ -124,7 +124,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
     def test_environment_precedes_sibling(self):
         checkout = self.fixture.clone("environment")
         result = self.resolve(
-            environment={"NEPTUNESDR_FIRMWAVE_ROOT": str(checkout)}
+            environment={"NEPTUNESDR_FIRMWARE_ROOT": str(checkout)}
         )
         self.assertEqual(result.source, "environment")
         self.assertEqual(Path(result.resolved_root), checkout.resolve())
@@ -139,7 +139,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
         with self.assertRaisesRegex(resolver.ResolutionError, "commit mismatch"):
             self.resolve(
                 explicit_root=bad,
-                environment={"NEPTUNESDR_FIRMWAVE_ROOT": str(good)},
+                environment={"NEPTUNESDR_FIRMWARE_ROOT": str(good)},
                 offline=False,
             )
         self.assertEqual(git(bad, "rev-parse", "HEAD"), before)
@@ -227,7 +227,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
         self.assertFalse((self.twin_root / ".cache").exists())
 
     def test_managed_cache_rejects_symlinked_parent_without_touching_target(self):
-        for component in (".cache", ".cache/deps", ".cache/deps/firmwave"):
+        for component in (".cache", ".cache/deps", ".cache/deps/firmware"):
             with self.subTest(component=component):
                 with tempfile.TemporaryDirectory(dir=self.base) as case_raw:
                     case = Path(case_raw)
@@ -241,11 +241,11 @@ class FirmwaveDependencyTests(unittest.TestCase):
                     escaped_target = outside
                     if component == ".cache":
                         escaped_target = (
-                            escaped_target / "deps" / "firmwave" / self.fixture.commit
+                            escaped_target / "deps" / "firmware" / self.fixture.commit
                         )
                     elif component == ".cache/deps":
                         escaped_target = (
-                            escaped_target / "firmwave" / self.fixture.commit
+                            escaped_target / "firmware" / self.fixture.commit
                         )
                     else:
                         escaped_target /= self.fixture.commit
@@ -260,7 +260,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
                     self.assertEqual(marker.read_text(encoding="utf-8"), "outside\n")
 
     def test_managed_cache_rejects_symlink_target_without_touching_destination(self):
-        managed = self.twin_root / ".cache" / "deps" / "firmwave"
+        managed = self.twin_root / ".cache" / "deps" / "firmware"
         managed.mkdir(parents=True)
         outside = self.base / "outside-target"
         outside.mkdir()
@@ -304,7 +304,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
         self.assertNotEqual(remote_tip, self.fixture.commit)
         result = self.resolve(offline=False)
         expected = (
-            self.twin_root / ".cache" / "deps" / "firmwave" / self.fixture.commit
+            self.twin_root / ".cache" / "deps" / "firmware" / self.fixture.commit
         ).resolve()
         self.assertEqual(Path(result.resolved_root), expected)
         self.assertEqual(git(expected, "rev-parse", "HEAD"), self.fixture.commit)
@@ -314,7 +314,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
 
     def test_invalid_managed_cache_is_replaced_but_sibling_is_not(self):
         target = (
-            self.twin_root / ".cache" / "deps" / "firmwave" / self.fixture.commit
+            self.twin_root / ".cache" / "deps" / "firmware" / self.fixture.commit
         )
         target.mkdir(parents=True)
         (target / "junk").write_text("managed cache\n", encoding="utf-8")
@@ -322,7 +322,7 @@ class FirmwaveDependencyTests(unittest.TestCase):
         self.assertEqual(Path(result.resolved_root), target.resolve())
         self.assertFalse((target / "junk").exists())
 
-        sibling = self.twin_root.parent / "Atom-NeptuneSDR_Firmwave"
+        sibling = self.twin_root.parent / "Atom-NeptuneSDR-Firmware"
         sibling.mkdir()
         marker = sibling / "do-not-mutate"
         marker.write_text("mine\n", encoding="utf-8")

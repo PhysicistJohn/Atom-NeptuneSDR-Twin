@@ -26,15 +26,15 @@ release boundary:
 | Repository | Owns | Does not own |
 | --- | --- | --- |
 | [`Atom-NeptuneSDR-Twin`](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin) | QEMU machine/devices, behavioral and numerical reference models, USB/network emulation, host protocol clients, contract graph, orchestration and verification | ARM source, firmware downloads, rootfs construction, or the canonical board-side ABI |
-| [`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave) | ARM source, immutable input locks, download/audit/build tooling, XSA validation, QEMU-development rootfs composition, firmware tests, machine-readable firmware interface, and canonical FFT ABI | QEMU device implementation, RF/reference behavior, USB appliance, or acceptance verdict |
+| [`Atom-NeptuneSDR-Firmware`](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Firmware) | ARM source, immutable input locks, download/audit/build tooling, XSA validation, QEMU-development rootfs composition, firmware tests, machine-readable firmware interface, and canonical FFT ABI | QEMU device implementation, RF/reference behavior, USB appliance, or acceptance verdict |
 
-The repositories do not import each other's Python packages. Firmwave publishes
+The repositories do not import each other's Python packages. Firmware publishes
 a versioned interface and a non-flashable runtime manifest; the Twin models
 that interface and independently verifies every emitted artifact before boot.
-`deps/firmwave.lock.json` binds URL, full commit,
-tree, and interface SHA-256. `scripts/resolve_firmwave.py` accepts only that
-identity from `../Atom-NeptuneSDR_Firmwave`,
-`NEPTUNESDR_FIRMWAVE_ROOT`, or its own managed cache. This makes the repository
+`deps/firmware.lock.json` binds URL, full commit,
+tree, and interface SHA-256. `scripts/resolve_firmware.py` accepts only that
+identity from `../Atom-NeptuneSDR-Firmware`,
+`NEPTUNESDR_FIRMWARE_ROOT`, or its own managed cache. This makes the repository
 split a checked contact rather than an informal path convention.
 
 The executable contract graph in `specs/contracts.json` contains eight components:
@@ -102,7 +102,7 @@ Composition connects compatible producer and consumer ports and discharges an in
 
 This matters at the FPGA/firmware seam and at the repository seam. A matching
 filename is insufficient. The bitstream register ABI, device-tree addresses,
-kernel drivers, DMA format, lane order, overflow semantics, Firmwave Git/tree
+kernel drivers, DMA format, lane order, overflow semantics, Firmware Git/tree
 identity, canonical interface hash, and runtime artifact hashes must be
 coherent as one contract.
 
@@ -152,7 +152,7 @@ The arrival script deliberately stops before stimulus that can alter the device.
 - Illegal state transitions and out-of-range configurations raise explicit errors.
 - Hashes prove byte identity, not authorship, safety, or compatibility.
 - Passing acceptance binds both clean repository source identities and the
-  Firmwave interface/runtime manifests; substituting an unpinned or dirty
+  Firmware interface/runtime manifests; substituting an unpinned or dirty
   firmware tree is a failure, not a warning.
 - The basic QEMU kernel-entry harness proves only its declared scope.  The
   P210-enabled QEMU machine separately executes the ARM AD9361, CF-AXI,

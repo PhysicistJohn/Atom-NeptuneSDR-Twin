@@ -8,13 +8,13 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$ROOT/scripts/cache_relocation.sh"
-FIRMWAVE_ROOT=$(python3 "$ROOT/scripts/resolve_firmwave.py")
-export NEPTUNESDR_FIRMWAVE_ROOT="$FIRMWAVE_ROOT"
-export PYTHONPATH="$FIRMWAVE_ROOT/src:$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+FIRMWARE_ROOT=$(python3 "$ROOT/scripts/resolve_firmware.py")
+export NEPTUNESDR_FIRMWARE_ROOT="$FIRMWARE_ROOT"
+export PYTHONPATH="$FIRMWARE_ROOT/src:$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 QEMU_CACHE=${P210_QEMU_CACHE:-"$ROOT/.cache/qemu-p210"}
 RUNTIME=${P210_RUNTIME_OUTPUT:-"$ROOT/.cache/p210-runtime"}
 GUEST=${P210_GUEST_OUTPUT:-"$ROOT/.cache/p210-guest/neptune-fft-streamer"}
-FIRMWARE_CACHE=${P210_FIRMWARE_CACHE:-"$ROOT/.cache/firmwave/firmware"}
+FIRMWARE_CACHE=${P210_FIRMWARE_CACHE:-"$ROOT/.cache/firmware/firmware"}
 FFT_TOOLCHAIN=${P210_FFT_TOOLCHAIN:-"$ROOT/.cache/fft-toolchain"}
 FFT_TOOLCHAIN_SCHEMA=fft-toolchain-v2
 QEMU="$QEMU_CACHE/bin/qemu-system-arm"
@@ -177,11 +177,11 @@ if [ "$BUILD" = yes ]; then
         fi
     fi
     ZIG="$ZIG_BIN" P210_GUEST_OUTPUT="$GUEST" \
-        "$FIRMWAVE_ROOT/scripts/build_guest_fft.sh"
+        "$FIRMWARE_ROOT/scripts/build_guest_fft.sh"
     "$ROOT/scripts/build_host_libiio.sh"
     python3 "$ROOT/scripts/acceptance_gate.py" write-build-cache \
         --root "$ROOT" \
-        --firmwave-root "$FIRMWAVE_ROOT" \
+        --firmware-root "$FIRMWARE_ROOT" \
         --qemu "$QEMU" \
         --guest "$GUEST" \
         --iio-info "$HOST_IIO_INFO" \
@@ -195,24 +195,24 @@ else
     "$ROOT/scripts/build_host_libiio.sh" --verify
     python3 "$ROOT/scripts/acceptance_gate.py" verify-build-cache \
         --root "$ROOT" \
-        --firmwave-root "$FIRMWAVE_ROOT" \
+        --firmware-root "$FIRMWARE_ROOT" \
         --qemu "$QEMU" \
         --guest "$GUEST" \
         --iio-info "$HOST_IIO_INFO" \
         --iio-readdev "$HOST_IIO_READDEV" \
         --libiio "$HOST_LIBIIO" \
         --output "$BUILD_IDENTITY" || \
-        die 'P210 build cache is not bound to current Twin/Firmwave source; rerun without --no-build'
+        die 'P210 build cache is not bound to current Twin/Firmware source; rerun without --no-build'
 fi
 
-python3 "$FIRMWAVE_ROOT/scripts/fetch_firmware.py" \
+python3 "$FIRMWARE_ROOT/scripts/fetch_firmware.py" \
     --cache-dir "$FIRMWARE_CACHE" p210-sd-boot plutosdr-fw-v0.39
-python3 "$FIRMWAVE_ROOT/scripts/prepare_runtime.py" \
+python3 "$FIRMWARE_ROOT/scripts/prepare_runtime.py" \
     --cache-dir "$FIRMWARE_CACHE" \
     --output "$RUNTIME" \
     --fft-streamer "$GUEST"
-python3 "$ROOT/scripts/verify_firmwave_bundle.py" \
-    --firmwave-root "$FIRMWAVE_ROOT" \
+python3 "$ROOT/scripts/verify_firmware_bundle.py" \
+    --firmware-root "$FIRMWARE_ROOT" \
     --runtime "$RUNTIME"
 
 for artifact in "$QEMU" "$KERNEL" "$DTB" "$INITRD"; do

@@ -19,11 +19,11 @@ COSIM = ROOT / "cosim"
 QEMU_SOURCES = COSIM / "qemu-10.0.2"
 SOURCE = QEMU_SOURCES / "hw/misc/p210_fft.c"
 HEADER = QEMU_SOURCES / "include/hw/misc/p210_fft.h"
-FIRMWAVE_ROOT = Path(
-    os.environ.get("NEPTUNESDR_FIRMWAVE_ROOT", ROOT.parent / "Atom-NeptuneSDR_Firmwave")
+FIRMWARE_ROOT = Path(
+    os.environ.get("NEPTUNESDR_FIRMWARE_ROOT", ROOT.parent / "Atom-NeptuneSDR-Firmware")
 )
-ABI_DOC = FIRMWAVE_ROOT / "docs/P210_FFT_ABI.md"
-INTERFACE_SPEC = FIRMWAVE_ROOT / "specs/p210-firmware-interface-v1.json"
+ABI_DOC = FIRMWARE_ROOT / "docs/P210_FFT_ABI.md"
+INTERFACE_SPEC = FIRMWARE_ROOT / "specs/p210-firmware-interface-v1.json"
 FFT_BASE = 0x7C450000
 
 
@@ -211,7 +211,7 @@ class P210FFTSourceTests(unittest.TestCase):
         self.assertEqual(definitions["P210_FFT_MAX_CHANNELS"], 2)
         self.assertEqual(definitions["P210_FFT_ERROR_BUFFER_OVERLAP"], 10)
 
-    def test_qemu_header_refines_the_canonical_firmwave_interface(self) -> None:
+    def test_qemu_header_refines_the_canonical_firmware_interface(self) -> None:
         interface = json.loads(INTERFACE_SPEC.read_text(encoding="utf-8"))
         self.assertEqual(
             interface["schema"], "neptunesdr.p210-firmware-interface/v1"

@@ -8,7 +8,7 @@ interrupt numbers described by the P210 device tree.
 The direct QEMU path is the shortest path to useful pre-arrival firmware work.
 This directory owns the virtual hardware; ARM source, firmware inputs, runtime
 composition, and the canonical board-side ABI live in the separately pinned
-[`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave)
+[`Atom-NeptuneSDR-Firmware`](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Firmware)
 repository:
 
 1. `p210-ad9361` replaces the NOR flash incorrectly attached to PS SPI0 chip
@@ -146,7 +146,7 @@ use it without an additional patch set.
 Exact addresses and probe contacts are machine-readable in
 [`p210-contacts.json`](p210-contacts.json).
 The FFT register ABI and memory ordering are specified separately in
-[Firmwave's canonical `P210_FFT_ABI.md`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave/blob/main/docs/P210_FFT_ABI.md).
+[Firmware's canonical `P210_FFT_ABI.md`](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Firmware/blob/main/docs/P210_FFT_ABI.md).
 
 ## License boundary
 

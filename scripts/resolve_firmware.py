@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the exact Atom-NeptuneSDR Firmwave source pinned by the Twin.
+"""Resolve the exact Atom-NeptuneSDR Firmware source pinned by the Twin.
 
 The resolver deliberately treats user-managed checkouts as immutable inputs.
 An explicit, environment, or sibling checkout must already match the lock; it
@@ -27,18 +27,18 @@ from urllib.parse import unquote, urlsplit
 LOCK_SCHEMA_VERSION = 1
 LOCK_PROFILE = "qemu-development"
 DEFAULT_INTERFACE_PATH = "specs/p210-firmware-interface-v1.json"
-MANAGED_CACHE_PARTS = (".cache", "deps", "firmwave")
+MANAGED_CACHE_PARTS = (".cache", "deps", "firmware")
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SCP_REMOTE = re.compile(r"(?:[^@/:]+@)?([^/:]+):(.+)\Z")
 
 
 class ResolutionError(RuntimeError):
-    """The locked Firmwave dependency could not be resolved safely."""
+    """The locked Firmware dependency could not be resolved safely."""
 
 
 @dataclass(frozen=True)
-class FirmwaveLock:
+class FirmwareLock:
     repository_url: str
     commit: str
     tree: str
@@ -97,15 +97,15 @@ def _validate_interface_path(raw: str) -> str:
     return raw
 
 
-def load_lock(path: Path) -> FirmwaveLock:
+def load_lock(path: Path) -> FirmwareLock:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise ResolutionError(f"cannot read Firmwave lock {path}: {exc}") from exc
+        raise ResolutionError(f"cannot read Firmware lock {path}: {exc}") from exc
     try:
         document = json.loads(raw)
     except (json.JSONDecodeError, UnicodeError) as exc:
-        raise ResolutionError(f"malformed Firmwave lock {path}: {exc}") from exc
+        raise ResolutionError(f"malformed Firmware lock {path}: {exc}") from exc
     root = _require_mapping(document, "lock")
     version = root.get("schema_version")
     if type(version) is not int or version != LOCK_SCHEMA_VERSION:
@@ -135,7 +135,7 @@ def load_lock(path: Path) -> FirmwaveLock:
     if not _SHA256.fullmatch(interface_sha256):
         raise ResolutionError("interface.sha256 must be a lowercase SHA-256 digest")
     canonical_remote(url)  # Validate before the URL reaches Git.
-    return FirmwaveLock(url, commit, tree, interface_path, interface_sha256)
+    return FirmwareLock(url, commit, tree, interface_path, interface_sha256)
 
 
 def canonical_remote(remote: str, *, cwd: Optional[Path] = None) -> str:
@@ -218,7 +218,7 @@ def _interface_file(root: Path, relative: str) -> Path:
         resolved.relative_to(root)
     except (OSError, ValueError) as exc:
         raise ResolutionError(
-            f"interface path escapes the Firmwave checkout or does not exist: {relative}"
+            f"interface path escapes the Firmware checkout or does not exist: {relative}"
         ) from exc
     cursor = root
     for part in PurePosixPath(relative).parts:
@@ -260,7 +260,7 @@ def _hidden_index_flags(root: Path) -> tuple[tuple[str, str], ...]:
 
 def verify_checkout(
     root: Path,
-    lock: FirmwaveLock,
+    lock: FirmwareLock,
     *,
     lock_path: Path,
     source: str,
@@ -268,10 +268,10 @@ def verify_checkout(
 ) -> Resolution:
     root = root.expanduser().resolve()
     if not root.is_dir():
-        raise ResolutionError(f"{source} Firmwave root is not a directory: {root}")
+        raise ResolutionError(f"{source} Firmware root is not a directory: {root}")
     top = Path(_git(root, "rev-parse", "--show-toplevel")).resolve()
     if top != root:
-        raise ResolutionError(f"Firmwave root is not the Git checkout root: {root}")
+        raise ResolutionError(f"Firmware root is not the Git checkout root: {root}")
     head = _git(root, "rev-parse", "--verify", "HEAD")
     if head != lock.commit:
         raise ResolutionError(
@@ -403,7 +403,7 @@ def _assert_safe_managed_cache_path(repo_root: Path, target: Path) -> Path:
 
 
 def _populate_cache(
-    repo_root: Path, target: Path, lock: FirmwaveLock, lock_path: Path
+    repo_root: Path, target: Path, lock: FirmwareLock, lock_path: Path
 ) -> Resolution:
     _assert_safe_managed_cache_path(repo_root, target)
     parent = target.parent
@@ -440,7 +440,7 @@ def _populate_cache(
             shutil.rmtree(temporary)
 
 
-def resolve_firmwave(
+def resolve_firmware(
     *,
     repo_root: Path,
     lock_path: Path,
@@ -462,7 +462,7 @@ def resolve_firmwave(
             source="explicit",
             allow_dirty=allow_dirty,
         )
-    env_value = environment.get("NEPTUNESDR_FIRMWAVE_ROOT", "").strip()
+    env_value = environment.get("NEPTUNESDR_FIRMWARE_ROOT", "").strip()
     if env_value:
         return verify_checkout(
             Path(env_value),
@@ -471,7 +471,7 @@ def resolve_firmwave(
             source="environment",
             allow_dirty=allow_dirty,
         )
-    sibling = repo_root.parent / "Atom-NeptuneSDR_Firmwave"
+    sibling = repo_root.parent / "Atom-NeptuneSDR-Firmware"
     if _existing(sibling):
         return verify_checkout(
             sibling,
@@ -481,7 +481,7 @@ def resolve_firmwave(
             allow_dirty=allow_dirty,
         )
 
-    target = repo_root / ".cache" / "deps" / "firmwave" / lock.commit
+    target = repo_root / ".cache" / "deps" / "firmware" / lock.commit
     _assert_safe_managed_cache_path(repo_root, target)
     if _existing(target):
         try:
@@ -497,7 +497,7 @@ def resolve_firmwave(
                 raise
     elif offline:
         raise ResolutionError(
-            "Firmwave dependency is not available locally and --offline forbids fetching"
+            "Firmware dependency is not available locally and --offline forbids fetching"
         )
     return _populate_cache(repo_root, target, lock, lock_path)
 
@@ -507,8 +507,8 @@ def _parser(repo_root: Path) -> argparse.ArgumentParser:
     parser.add_argument(
         "--lock",
         type=Path,
-        default=repo_root / "deps" / "firmwave.lock.json",
-        help="dependency lock (default: deps/firmwave.lock.json)",
+        default=repo_root / "deps" / "firmware.lock.json",
+        help="dependency lock (default: deps/firmware.lock.json)",
     )
     parser.add_argument(
         "--root",
@@ -532,7 +532,7 @@ def main(arguments: Optional[Sequence[str]] = None) -> int:
     parser = _parser(repo_root)
     args = parser.parse_args(arguments)
     try:
-        result = resolve_firmwave(
+        result = resolve_firmware(
             repo_root=repo_root,
             lock_path=args.lock,
             explicit_root=args.root,
@@ -540,7 +540,7 @@ def main(arguments: Optional[Sequence[str]] = None) -> int:
             allow_dirty=args.allow_dirty,
         )
     except ResolutionError as exc:
-        print(f"firmwave resolution failed: {exc}", file=sys.stderr)
+        print(f"firmware resolution failed: {exc}", file=sys.stderr)
         return 2
     if args.json:
         print(json.dumps(result.to_json(), indent=2, sort_keys=True))

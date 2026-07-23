@@ -37,10 +37,10 @@ None of those values is a delivered-unit fact until a fresh descriptor capture a
 ## Firmware and virtual-device composition
 
 The locked
-[`Atom-NeptuneSDR_Firmwave`](https://github.com/PhysicistJohn/Atom-NeptuneSDR_Firmwave)
+[`Atom-NeptuneSDR-Firmware`](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Firmware)
 checkout supplies the audited, non-flashable `qemu-development` guest bundle.
 This Twin supplies the QEMU devices and host-facing USB implementation; the
-full acceptance manifest binds both source identities and the Firmwave runtime
+full acceptance manifest binds both source identities and the Firmware runtime
 artifact hashes.
 
 The public P210 device tree configures its enabled ChipIdea controller with
