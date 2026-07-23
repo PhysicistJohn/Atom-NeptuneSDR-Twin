@@ -12,3 +12,5 @@ artifacts/
 evidence/*
 !evidence/.gitkeep
 
+cosim/operator-core/test_operator_core
+cosim/operator-rtl/tb_fft
