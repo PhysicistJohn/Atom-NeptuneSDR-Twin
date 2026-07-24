@@ -63,7 +63,49 @@ cd cosim/qemu-baremetal && make run QEMU=../../.cache/qemu-p210/bin/qemu-system-
 `P210_OPERATOR_BAREMETAL PASS` -- the operator driven from code on the guest
 Cortex-A9, bit-exact. (Needs an arm-none-eabi toolchain.)
 
-## 5. Real FPGA synthesis (Vivado)
+## 5. Your own RTL running IN the twin (Verilator co-sim)
+
+The device in step 4 is a C transliteration of the golden arithmetic. This step
+runs the **actual Verilog** instead. The synthesizable engine
+(`operator-rtl/p210_fft_synth.v`, the same RTL that closes timing in step 6) is
+Verilated into a library and driven cycle-by-cycle inside the emulated Zynq.
+
+```
+cd cosim/rtl-cosim && make test        # needs verilator; standalone bit-exact proof
+```
+
+`P210_RTL_COSIM PASS` -- the Verilated RTL matches golden through the `rtl_block`
+ABI, with no QEMU. Then the same library, executing in the twin over MMIO/DMA:
+
+```
+sh scripts/build_p210_qemu.sh          # once; builds the p210-rtl device
+python3 cosim/tests/run_rtl_qtest.py \
+    .cache/qemu-p210/bin/qemu-system-arm \
+    cosim/rtl-cosim/obj_p210fft_rtl/libp210fft_rtl.so \
+    cosim/operator-rtl
+```
+
+`P210_RTL_QEMU PASS` -- QEMU's `p210-rtl` machine flag maps a dlopen-backed RTL
+block at 0x7c450000; it loads the library named by `$P210_RTL_LIB`, DMAs the
+input in, clocks the real Verilog to `done`, and DMAs the result out, bit-exact
+to the golden pin.
+
+**To run your own FPGA**, `make check` proves the flow end to end on a second,
+deliberately non-FFT block (`examples/cmulj`, multiply-by-j) built through the
+same variables:
+
+```
+cd cosim/rtl-cosim && make check       # FFT + a custom block, standalone + in the twin
+```
+
+Writing your own block means: author a small block (same block-processor port
+contract), copy the ~90-line shim and swap one class name, generate vectors, then
+`make test` / `make qemu-test` with your `RTL=/TOP=/LIBNAME=/SHIM=/VDIR=`
+overrides. The QEMU `p210-rtl` device is **not** rebuilt -- it dlopens whatever
+library you name. The full recipe, the port contract, and the size/word-width
+envelope are in [`rtl-cosim/README.md`](rtl-cosim/README.md).
+
+## 6. Real FPGA synthesis (Vivado)
 
 ```
 cd cosim/operator-rtl/synth && vivado -mode batch -source synth_alu_ooc.tcl
@@ -76,7 +118,16 @@ the native-vs-Rosetta method note.
 
 ## Scope
 
-The QEMU device is a functional twin, bit-exact to the golden reference; it is
-not evidence of a synthesized, timing-closed bitstream (that is the RTL +
-`synth/RESULTS.md`). See the parent README for the v1 machine and the firmware
-bundle.
+Three distinct claims, kept separate:
+
+- **Functional twin** (step 4): the `p210-operator` device is a C model of the
+  golden arithmetic, bit-exact to the reference.
+- **RTL co-simulation** (step 5): the `p210-rtl` device runs the real Verilog
+  (Verilated) inside the twin. This proves the RTL is functionally correct and
+  drivable over the register/DMA ABI. It is a behavioral simulation of the RTL,
+  not gate-level and not timing.
+- **Timing closure** (step 6): out-of-context Vivado synthesis on the actual
+  `xc7z020clg400-1` establishes the clock the RTL meets. It is not a placed,
+  routed, full-device bitstream.
+
+See the parent README for the v1 machine and the firmware bundle.

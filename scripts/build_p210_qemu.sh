@@ -79,6 +79,8 @@ verify_binary() {
     "$OUTPUT" --version 2>/dev/null | grep -q 'QEMU emulator version 10\.0\.2' || return 1
     "$OUTPUT" -machine xilinx-zynq-a9,help 2>&1 |
         grep -q 'p210=<bool>.*Enable HAMGEEK P210 SDR devices' || return 1
+    "$OUTPUT" -machine xilinx-zynq-a9,help 2>&1 |
+        grep -q 'p210-rtl=<bool>' || return 1
 }
 
 guard_relocatable_cache "$CACHE" qemu-p210-v1 build_p210_qemu.sh \
@@ -171,11 +173,18 @@ copy_if_changed "$DEVICE_TREE/include/hw/misc/p210_fft.h" "$SOURCE/include/hw/mi
 copy_if_changed "$DEVICE_TREE/hw/misc/p210_operator.c" "$SOURCE/hw/misc/p210_operator.c"
 copy_if_changed "$DEVICE_TREE/hw/misc/p210_twiddle_rom.h" "$SOURCE/hw/misc/p210_twiddle_rom.h"
 copy_if_changed "$DEVICE_TREE/include/hw/misc/p210_operator.h" "$SOURCE/include/hw/misc/p210_operator.h"
+copy_if_changed "$DEVICE_TREE/hw/misc/p210_rtl.c" "$SOURCE/hw/misc/p210_rtl.c"
+copy_if_changed "$DEVICE_TREE/include/hw/misc/p210_rtl.h" "$SOURCE/include/hw/misc/p210_rtl.h"
 
 # Wire the v2 operator device into the P210 machine (idempotent). Adds the
 # meson entry, machine include, a `p210-operator` property, and -- when it is on
 # -- maps the operator at the real 0x7c450000 in place of the v1 FFT.
 python3 "$ROOT/scripts/wire_operator_device.py" "$SOURCE"
+
+# Wire the RTL co-processor device (idempotent, after the operator so it extends
+# the same 0x7c450000 choice). `p210-rtl=on` runs a Verilated RTL block from
+# $P210_RTL_LIB at that address, taking precedence over the operator and v1 FFT.
+python3 "$ROOT/scripts/wire_rtl_device.py" "$SOURCE"
 
 export PATH="$ENV/bin:$PATH"
 export PKG_CONFIG_PATH="$ENV/lib/pkgconfig:$ENV/share/pkgconfig"
