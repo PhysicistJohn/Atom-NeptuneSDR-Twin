@@ -14,7 +14,7 @@ import struct
 import subprocess
 import sys
 
-OP_BASE = 0x7C460000
+OP_BASE = 0x7C450000
 INPUT_ADDR = 0x18000000
 OUTPUT2_ADDR = 0x18180000
 WEIGHT_ADDR = 0x18200000
@@ -66,7 +66,7 @@ def crc32(data):
 class QTest:
     def __init__(self, qemu):
         self.p = subprocess.Popen(
-            [qemu, "-machine", "xilinx-zynq-a9,p210=on", "-accel", "qtest",
+            [qemu, "-machine", "xilinx-zynq-a9,p210=on,p210-operator=on", "-accel", "qtest",
              "-m", "1024", "-display", "none", "-qtest", "stdio"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True)

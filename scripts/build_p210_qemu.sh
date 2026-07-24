@@ -172,40 +172,10 @@ copy_if_changed "$DEVICE_TREE/hw/misc/p210_operator.c" "$SOURCE/hw/misc/p210_ope
 copy_if_changed "$DEVICE_TREE/hw/misc/p210_twiddle_rom.h" "$SOURCE/hw/misc/p210_twiddle_rom.h"
 copy_if_changed "$DEVICE_TREE/include/hw/misc/p210_operator.h" "$SOURCE/include/hw/misc/p210_operator.h"
 
-# Wire the v2 operator device into the P210 machine, idempotently (the base
-# 0001 patch predates it). Adds the meson build entry, the machine include, and
-# the sysbus instantiation at 0x7c460000 / GIC SPI 59 next to the v1 FFT.
-python3 - "$SOURCE" <<'WIRE'
-import sys, io
-src = sys.argv[1]
-meson = src + "/hw/misc/meson.build"
-m = open(meson).read()
-if "p210_operator.c" not in m:
-    m = m.replace("system_ss.add(when: 'CONFIG_ZYNQ', if_true: files('p210_fft.c'))",
-                  "system_ss.add(when: 'CONFIG_ZYNQ', if_true: files('p210_fft.c'))\n"
-                  "system_ss.add(when: 'CONFIG_ZYNQ', if_true: files('p210_operator.c'))")
-    open(meson, "w").write(m)
-mach = src + "/hw/arm/xilinx_zynq.c"
-lines = open(mach).read().split("\n")
-text = "\n".join(lines)
-if "p210_operator.h" not in text:
-    for i, l in enumerate(lines):
-        if '#include "hw/misc/p210_fft.h"' in l:
-            lines.insert(i + 1, '#include "hw/misc/p210_operator.h"'); break
-if "TYPE_P210_OPERATOR" not in text:
-    for i, l in enumerate(lines):
-        if "sysbus_connect_irq(busdev, 0, pic[58]);" in l:
-            lines[i+1:i+1] = [
-                "",
-                "        dev = qdev_new(TYPE_P210_OPERATOR);",
-                "        busdev = SYS_BUS_DEVICE(dev);",
-                "        sysbus_realize_and_unref(busdev, &error_fatal);",
-                "        sysbus_mmio_map(busdev, 0, 0x7c460000);",
-                "        sysbus_connect_irq(busdev, 0, pic[59]);",
-            ]
-            break
-open(mach, "w").write("\n".join(lines))
-WIRE
+# Wire the v2 operator device into the P210 machine (idempotent). Adds the
+# meson entry, machine include, a `p210-operator` property, and -- when it is on
+# -- maps the operator at the real 0x7c450000 in place of the v1 FFT.
+python3 "$ROOT/scripts/wire_operator_device.py" "$SOURCE"
 
 export PATH="$ENV/bin:$PATH"
 export PKG_CONFIG_PATH="$ENV/lib/pkgconfig:$ENV/share/pkgconfig"

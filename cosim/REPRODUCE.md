@@ -46,8 +46,10 @@ python3 cosim/tests/run_operator_qtest.py \
     ../Atom-Neural-RL/src/atom_neural_rl/data/twiddle-rom-q117.bin
 ```
 
-Builds QEMU 10.0.2 with the operator device wired into the Zynq machine, then
-drives it through emulated MMIO + DMA (no guest boot, via qtest): the operator
+Builds QEMU 10.0.2 with the operator device (enabled by the `p210-operator`
+machine flag, which maps it at the real accelerator address 0x7c450000; the
+default `p210=on` leaves the v1 FFT there instead), then drives it through
+emulated MMIO + DMA (no guest boot, via qtest): the operator
 executes the full ABI transaction and its block output matches the golden pin
 (`P210_OPERATOR_QEMU PASS`), with the CRC gate rejecting a corrupted bank.
 
