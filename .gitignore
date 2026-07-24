@@ -20,3 +20,4 @@ cosim/operator-rtl/tb_fft_engine
 cosim/operator-rtl/tb_synth
 cosim/operator-rtl/*.vcd
 cosim/operator-rtl/op_*_256.memh
+cosim/qemu-baremetal/op_test.elf

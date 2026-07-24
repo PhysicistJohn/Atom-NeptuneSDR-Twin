@@ -53,6 +53,16 @@ emulated MMIO + DMA (no guest boot, via qtest): the operator
 executes the full ABI transaction and its block output matches the golden pin
 (`P210_OPERATOR_QEMU PASS`), with the CRC gate rejecting a corrupted bank.
 
+And driven from the emulated **CPU** (not external qtest), a bare-metal ARM
+program that pokes the operator registers itself:
+
+```
+cd cosim/qemu-baremetal && make run QEMU=../../.cache/qemu-p210/bin/qemu-system-arm
+```
+
+`P210_OPERATOR_BAREMETAL PASS` -- the operator driven from code on the guest
+Cortex-A9, bit-exact. (Needs an arm-none-eabi toolchain.)
+
 ## 5. Real FPGA synthesis (Vivado)
 
 ```
